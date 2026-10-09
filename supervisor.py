@@ -337,12 +337,21 @@ class NodeSupervisor:
     def stop_all_harvesters(self, nodes: List[ProxyNode]) -> int:
         self.cancel_startup()
         stopped = 0
+        running_ids = set(self.procs.keys()) | set(self.wp_procs.keys())
+        for nid in list(running_ids):
+            proc = self.procs.pop(nid, None)
+            if proc:
+                _kill_proc_tree(proc)
+            wp_proc = self.wp_procs.pop(nid, None)
+            if wp_proc:
+                _kill_proc_tree(wp_proc)
+            stopped += 1
+
         for node in nodes:
-            if node.status in ("RUNNING", "STARTING") or node.pid:
-                self.stop_harvester(node)
-                stopped += 1
-            else:
-                self.stop_harvester(node)
+            if node.id in running_ids or node.status in ("RUNNING", "STARTING") or node.pid:
+                node.pid = None
+                node.wp_pid = None
+                node.status = "STOPPED"
 
         if os.name != "nt":
             try:
@@ -355,14 +364,22 @@ class NodeSupervisor:
         self.cancel_startup()
         stopped = 0
         target_type = "surfshark" if "surfshark" in node_type.lower() else "proxy"
+        target_node_ids = {node.id for node in nodes if getattr(node, "node_type", "proxy").lower() == target_type}
+
+        for nid in list(target_node_ids):
+            proc = self.procs.pop(nid, None)
+            if proc:
+                _kill_proc_tree(proc)
+                stopped += 1
+            wp_proc = self.wp_procs.pop(nid, None)
+            if wp_proc:
+                _kill_proc_tree(wp_proc)
+
         for node in nodes:
-            curr_type = getattr(node, "node_type", "proxy").lower()
-            if curr_type == target_type:
-                if node.status in ("RUNNING", "STARTING") or node.pid:
-                    self.stop_harvester(node)
-                    stopped += 1
-                else:
-                    self.stop_harvester(node)
+            if node.id in target_node_ids:
+                node.pid = None
+                node.wp_pid = None
+                node.status = "STOPPED"
         return stopped
 
     def get_node_logs(self, node: ProxyNode, max_lines: int = 60) -> str:
