@@ -714,7 +714,7 @@ if (btnCheckProxies) {
                     remove_dead: false,
                     raw_text: rawText || null,
                     concurrency: threads,
-                    timeout: 2.5
+                    timeout: 3.5
                 })
             });
             const data = await res.json();
@@ -766,7 +766,7 @@ if (btnCheckAndPurge) {
                     remove_dead: true,
                     raw_text: rawText || null,
                     concurrency: threads,
-                    timeout: 2.5
+                    timeout: 3.5
                 })
             });
             const data = await res.json();

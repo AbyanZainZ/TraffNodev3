@@ -294,7 +294,7 @@ async def check_socks4_handshake(proxy_host: str, proxy_port: int, timeout: floa
         return False, None, None, str(e)[:30]
 
 
-async def check_single_proxy(proxy: ProxyNode, timeout: float = 2.5) -> ProxyNode:
+async def check_single_proxy(proxy: ProxyNode, timeout: float = 3.5) -> ProxyNode:
     if not proxy.is_valid:
         proxy.is_alive = False
         proxy.error = "Format proxy tidak valid"
@@ -356,10 +356,15 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 2.5) -> ProxyNod
                 last_err = f"Timeout ({timeout}s)"
                 is_host_unreachable = True
                 break
-            except (httpx.ConnectError, httpx.ProxyError) as ce:
+            except httpx.ConnectError as ce:
                 proxy.last_checked = time.time()
                 last_err = "Connection Refused / Closed"
                 is_host_unreachable = True
+                break
+            except httpx.ProxyError as pe:
+                proxy.last_checked = time.time()
+                last_err = f"Proxy Auth/Protocol Error ({str(pe)[:25]})"
+                # Do not set is_host_unreachable: allow fallback to socks5 / socks4
                 break
             except Exception as e:
                 proxy.last_checked = time.time()
@@ -373,7 +378,6 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 2.5) -> ProxyNod
 
         if is_host_unreachable:
             # If TCP port connection timed out or was refused, the host/port is completely unreachable.
-            # Avoid wasting time testing subsequent protocols against an unreachable port.
             break
 
     proxy.is_alive = False
@@ -385,7 +389,7 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 2.5) -> ProxyNod
 async def check_all_proxies(
     proxies: List[ProxyNode],
     max_concurrency: int = 150,
-    timeout: float = 2.5,
+    timeout: float = 3.5,
     progress_callback: Optional[Callable[..., None]] = None,
     on_live_callback: Optional[Callable[[ProxyNode], Any]] = None,
     cancel_event: Optional[asyncio.Event] = None

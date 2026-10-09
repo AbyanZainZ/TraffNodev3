@@ -353,13 +353,13 @@ async def run_health_check_task(
         check_state["last_result"] = "Tidak ada proxy untuk dicek (daftar proxy kosong)."
         return
 
-    # Deduplicate candidate list to avoid duplicate checking
+    # Deduplicate candidate list to avoid duplicate checking (include credentials for residential rotating proxies)
     seen_cand = set()
     unique_candidates: List[ProxyNode] = []
     for c in candidates:
         if not c.is_valid or not c.host or not c.port:
             continue
-        key = f"{c.host}:{c.port}"
+        key = (c.host, c.port, c.user or "", c.password or "")
         if key not in seen_cand:
             seen_cand.add(key)
             unique_candidates.append(c)
@@ -382,8 +382,14 @@ async def run_health_check_task(
 
     async def _on_proxy_live(node: ProxyNode):
         async with live_nodes_lock:
-            # Check if this proxy is already in custom_proxy_nodes
-            existing = next((n for n in custom_proxy_nodes if n.host == node.host and n.port == node.port), None)
+            # Check if this proxy with identical credentials is already in custom_proxy_nodes
+            existing = next(
+                (n for n in custom_proxy_nodes
+                 if n.host == node.host and n.port == node.port
+                 and (n.user or "") == (node.user or "")
+                 and (n.password or "") == (node.password or "")),
+                None
+            )
             if existing:
                 existing.is_alive = True
                 existing.latency_ms = node.latency_ms
@@ -434,10 +440,13 @@ async def run_health_check_task(
 
         # If remove_dead was requested, purge any existing node that failed in this check
         if remove_dead and not was_cancelled:
-            tested_dead_pairs = {(p.host, p.port) for p in checked_proxies if p.is_alive is False}
+            tested_dead_keys = {
+                (p.host, p.port, p.user or "", p.password or "")
+                for p in checked_proxies if p.is_alive is False
+            }
             custom_proxy_nodes = [
                 n for n in custom_proxy_nodes
-                if not (n.host, n.port) in tested_dead_pairs
+                if (n.host, n.port, n.user or "", n.password or "") not in tested_dead_keys
             ]
 
         # Final persistent sync to disk
@@ -811,7 +820,7 @@ async def trigger_check(bg_tasks: BackgroundTasks, payload: Optional[CheckReques
     raw_text = payload.raw_text.strip() if (payload and payload.raw_text) else None
     remove_dead = bool(payload and payload.remove_dead)
     concurrency = int(payload.concurrency) if (payload and payload.concurrency) else 150
-    timeout = float(payload.timeout) if (payload and payload.timeout) else 2.5
+    timeout = float(payload.timeout) if (payload and payload.timeout) else 3.5
     concurrency = max(20, min(200, concurrency))
 
     has_text = bool(raw_text and len(raw_text) > 0)
