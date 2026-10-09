@@ -416,17 +416,21 @@ if (btnSaveToken) {
         }
         btnSaveToken.disabled = true;
         try {
+            const privkey = (cfgSurfsharkKey ? cfgSurfsharkKey.value : '').trim();
+            const payload = { traff_token: token };
+            if (privkey) payload.surfshark_private_key = privkey;
+
             const res = await fetch('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ traff_token: token })
+                body: JSON.stringify(payload)
             });
             const data = await res.json();
-            if (data.success) {
+            if (res.ok && data.success) {
                 showToast("Token TraffMonetizer berhasil disimpan.");
                 fetchStatus();
             } else {
-                showToast(data.message || "Gagal menyimpan token.", true);
+                showToast(data.message || data.detail || "Gagal menyimpan token.", true);
             }
         } catch (e) {
             showToast("Koneksi gagal saat menyimpan token.", true);
@@ -449,18 +453,17 @@ if (btnSaveRelayCfg) {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    traff_token: cfgToken.value || '',
                     relay_start_port: port,
                     relay_client_user: user,
                     relay_client_pass: pass
                 })
             });
             const data = await res.json();
-            if (data.success) {
+            if (res.ok && data.success) {
                 showToast("Pengaturan Relay Gateway berhasil disimpan.");
                 fetchStatus();
             } else {
-                showToast(data.message || "Gagal menyimpan relay.", true);
+                showToast(data.message || data.detail || "Gagal menyimpan relay.", true);
             }
         } catch (e) {
             showToast("Koneksi gagal.", true);
@@ -480,17 +483,21 @@ if (btnSaveSsKey) {
         }
         btnSaveSsKey.disabled = true;
         try {
+            const curToken = (cfgToken ? cfgToken.value : '').trim();
+            const payload = { surfshark_private_key: privkey };
+            if (curToken) payload.traff_token = curToken;
+
             const res = await fetch('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ surfshark_private_key: privkey })
+                body: JSON.stringify(payload)
             });
             const data = await res.json();
-            if (data.success) {
+            if (res.ok && data.success) {
                 showToast("WireGuard Private Key Surfshark berhasil disimpan!");
                 fetchStatus();
             } else {
-                showToast("Gagal menyimpan key.", true);
+                showToast(data.message || data.detail || "Gagal menyimpan key.", true);
             }
         } catch (e) {
             showToast("Koneksi gagal saat menyimpan key.", true);
