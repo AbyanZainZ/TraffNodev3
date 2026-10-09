@@ -407,7 +407,11 @@ async def auth_middleware(request: Request, call_next):
         or path == "/favicon.ico"
         or path in ("/api/login", "/api/logout", "/api/auth/status")
     ):
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     if not config.get("dashboard_auth_enabled", True):
         return await call_next(request)
@@ -706,14 +710,17 @@ async def trigger_check(bg_tasks: BackgroundTasks, payload: Optional[CheckReques
     if check_state["is_checking"]:
         return {"success": False, "message": "Pengecekan proxy sedang berlangsung."}
 
-    raw_text = payload.raw_text if payload else None
+    raw_text = payload.raw_text.strip() if (payload and payload.raw_text) else None
     remove_dead = bool(payload and payload.remove_dead)
 
-    has_text = bool(raw_text and raw_text.strip())
-    if not has_text and not custom_proxy_nodes:
-        txt = load_proxies_file()
-        if not txt.strip():
-            return {"success": False, "message": "Daftar proxy kosong. Silakan masukkan proxy di textarea terlebih dahulu."}
+    has_text = bool(raw_text and len(raw_text) > 0)
+    txt_file = load_proxies_file().strip()
+
+    if not has_text and not custom_proxy_nodes and not txt_file:
+        return {
+            "success": False,
+            "message": "Daftar proxy kosong! Klik '💾 SIMPAN PROXY' atau tempel daftar proxy di textarea terlebih dahulu."
+        }
 
     bg_tasks.add_task(run_health_check_task, remove_dead=remove_dead, raw_text=raw_text)
     msg = "Pengecekan proxy dimulai (otomatis hapus proxy mati)." if remove_dead else "Pengecekan kesehatan proxy dimulai."

@@ -672,15 +672,30 @@ if (btnSaveProxies) {
 // Test Proxies (Check all without removing)
 if (btnCheckProxies) {
     btnCheckProxies.addEventListener('click', async () => {
-        const rawText = (proxiesTextarea ? proxiesTextarea.value : '').trim();
+        const ta = document.getElementById('proxies-textarea');
+        const rawText = ta ? ta.value.trim() : '';
+        if (!rawText && (!cntProxyTotal || parseInt(cntProxyTotal.textContent || '0') === 0)) {
+            showToast("Daftar proxy masih kosong. Silakan masukkan proxy di textarea terlebih dahulu.", true);
+            return;
+        }
+
         btnCheckProxies.disabled = true;
         btnCheckAndPurge.disabled = true;
         btnCheckProxies.innerHTML = "⏳ Starting...";
+
         try {
+            if (rawText) {
+                fetch('/api/proxies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ raw_text: rawText, mode: "replace" })
+                }).catch(() => {});
+            }
+
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: false, raw_text: rawText || undefined })
+                body: JSON.stringify({ remove_dead: false, raw_text: rawText || null })
             });
             const data = await res.json();
             if (data.success) {
@@ -708,15 +723,30 @@ if (btnCheckProxies) {
 // Test Proxies & Auto Purge Dead
 if (btnCheckAndPurge) {
     btnCheckAndPurge.addEventListener('click', async () => {
-        const rawText = (proxiesTextarea ? proxiesTextarea.value : '').trim();
+        const ta = document.getElementById('proxies-textarea');
+        const rawText = ta ? ta.value.trim() : '';
+        if (!rawText && (!cntProxyTotal || parseInt(cntProxyTotal.textContent || '0') === 0)) {
+            showToast("Daftar proxy masih kosong. Silakan masukkan proxy di textarea terlebih dahulu.", true);
+            return;
+        }
+
         btnCheckProxies.disabled = true;
         btnCheckAndPurge.disabled = true;
         btnCheckAndPurge.innerHTML = "⏳ Starting...";
+
         try {
+            if (rawText) {
+                fetch('/api/proxies', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ raw_text: rawText, mode: "replace" })
+                }).catch(() => {});
+            }
+
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: true, raw_text: rawText || undefined })
+                body: JSON.stringify({ remove_dead: true, raw_text: rawText || null })
             });
             const data = await res.json();
             if (data.success) {
