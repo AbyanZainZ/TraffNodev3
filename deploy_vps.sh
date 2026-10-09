@@ -25,12 +25,14 @@ systemctl stop traffnode 2>/dev/null || true
 pkill -9 -f "app.py" 2>/dev/null || true
 pkill -9 -f "cli start accept" 2>/dev/null || true
 pkill -9 -f "wireproxy" 2>/dev/null || true
-which fuser >/dev/null 2>&1 && fuser -k 10000:11000/tcp 2>/dev/null || true
+which fuser >/dev/null 2>&1 && fuser -k 10001/tcp 2>/dev/null || true
+which lsof >/dev/null 2>&1 && kill -9 $(lsof -t -i:10000-11000) 2>/dev/null || true
 
 echo -e "${GREEN}[1/6] Memperbarui sistem & menginstall dependensi...${NC}"
 apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git curl proxychains4 net-tools procps ufw psmisc
-fuser -k 10000:11000/tcp 2>/dev/null || true
+apt-get install -y python3 python3-pip python3-venv git curl proxychains4 net-tools procps ufw psmisc lsof
+fuser -k 10001/tcp 2>/dev/null || true
+kill -9 $(lsof -t -i:10000-11000) 2>/dev/null || true
 
 echo -e "${GREEN}[2/6] Menyiapkan binary resmi TraffMonetizer CLI (/usr/local/bin/cli)...${NC}"
 TM_PATH="/usr/local/bin/cli"
