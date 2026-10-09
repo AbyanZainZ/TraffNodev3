@@ -149,6 +149,8 @@ def load_nodes_file() -> List[ProxyNode]:
                 node.relay_port = item.get("relay_port")
                 node.is_alive = item.get("is_alive", True if node.node_type == "surfshark" else None)
                 node.latency_ms = item.get("latency_ms")
+                if node.node_type == "proxy" and node.is_alive is False:
+                    continue
                 loaded.append(node)
             return loaded
         except Exception as e:
@@ -267,44 +269,60 @@ async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[st
     if check_state["is_checking"]:
         return
 
-    # If raw_text is provided, parse and save proxies first
+    # Parse candidates from raw_text, proxies.txt, or existing custom_proxy_nodes
+    candidates_text = ""
     if raw_text is not None and raw_text.strip():
-        parsed = parse_proxies_text(raw_text)
-        if parsed:
-            save_proxies_file(raw_text)
-            for idx, p in enumerate(parsed):
-                p.id = 1001 + idx
-                p.node_type = "proxy"
-                p.relay_status = "STOPPED"
-            custom_proxy_nodes = parsed
-            save_nodes_file(get_combined_nodes())
+        candidates_text = raw_text.strip()
+    else:
+        candidates_text = load_proxies_file().strip()
 
-    if not custom_proxy_nodes:
-        raw_px = load_proxies_file()
-        if raw_px:
-            parsed = parse_proxies_text(raw_px)
-            for idx, p in enumerate(parsed):
-                p.id = 1001 + idx
-                p.node_type = "proxy"
-                p.relay_status = "STOPPED"
-            custom_proxy_nodes = parsed
-            save_nodes_file(get_combined_nodes())
+    candidates: List[ProxyNode] = []
+    if candidates_text:
+        candidates = parse_proxies_text(candidates_text)
+    elif custom_proxy_nodes:
+        candidates = [ProxyNode(n.raw) for n in custom_proxy_nodes]
 
-    if not custom_proxy_nodes:
+    if not candidates:
         check_state["is_checking"] = False
         check_state["last_result"] = "Tidak ada proxy untuk dicek (daftar proxy kosong)."
         return
+
+    # User requirement:
+    # "proxy yang live masuk ke daftar yang di bawah"
+    # "proxy yang masih checking , gak perlu di masukin ke bawah , bikin lag doang"
+    # Candidates are kept in checking queue only. custom_proxy_nodes is cleared for live-only promotion.
+    supervisor.stop_filtered_harvesters(custom_proxy_nodes, "proxy")
+    custom_proxy_nodes = []
+    save_nodes_file(get_combined_nodes())
 
     _check_cancel_event = asyncio.Event()
     check_state["is_checking"] = True
     check_state["cancel_requested"] = False
     check_state["remove_dead"] = remove_dead
-    check_state["total"] = len(custom_proxy_nodes)
+    check_state["total"] = len(candidates)
     check_state["done"] = 0
     check_state["alive"] = 0
     check_state["dead"] = 0
     check_state["current_target"] = ""
     check_state["last_result"] = None
+
+    live_nodes_lock = asyncio.Lock()
+    next_node_id = 1001
+
+    async def _on_proxy_live(node: ProxyNode):
+        nonlocal next_node_id
+        async with live_nodes_lock:
+            node.id = next_node_id
+            next_node_id += 1
+            node.node_type = "proxy"
+            node.status = "IDLE"
+            node.relay_status = "STOPPED"
+            custom_proxy_nodes.append(node)
+            # Periodic persist so newly discovered live nodes appear in API in real-time
+            if len(custom_proxy_nodes) % 5 == 0 or len(custom_proxy_nodes) <= 10:
+                save_nodes_file(get_combined_nodes())
+                lines = [p.to_url() for p in custom_proxy_nodes]
+                save_proxies_file("\n".join(lines))
 
     def _on_prog(done, total, alive, dead, current_target=""):
         check_state["done"] = done
@@ -315,42 +333,33 @@ async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[st
 
     try:
         checked_proxies = await check_all_proxies(
-            custom_proxy_nodes,
-            max_concurrency=30,
-            timeout=config.get("check_timeout", 4.0),
+            candidates,
+            max_concurrency=60,
+            timeout=config.get("check_timeout", 3.5),
             progress_callback=_on_prog,
+            on_live_callback=_on_proxy_live,
             cancel_event=_check_cancel_event
         )
-        checked_map = {n.id: n for n in checked_proxies}
-        for i, n in enumerate(custom_proxy_nodes):
-            if n.id in checked_map:
-                custom_proxy_nodes[i] = checked_map[n.id]
 
         was_cancelled = check_state["cancel_requested"] or (_check_cancel_event and _check_cancel_event.is_set())
 
-        if remove_dead:
-            initial_count = len(custom_proxy_nodes)
-            custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is not False]
-            removed = initial_count - len(custom_proxy_nodes)
-            for idx, p in enumerate(custom_proxy_nodes):
-                p.id = 1001 + idx
-            lines = [p.to_url() for p in custom_proxy_nodes]
-            save_proxies_file("\n".join(lines))
-            if was_cancelled:
-                check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} dicek ({check_state['alive']} Live, {removed} Dead dihapus)."
-            else:
-                check_state["last_result"] = f"Pengecekan selesai: {len(custom_proxy_nodes)} Live aktif, {removed} Dead dihapus."
-        else:
-            if was_cancelled:
-                check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} dicek ({check_state['alive']} Live, {check_state['dead']} Dead)."
-            else:
-                check_state["last_result"] = f"Pengecekan selesai: {check_state['alive']} Live, {check_state['dead']} Dead (Total: {check_state['total']})."
-
+        # Final save of live proxies
+        lines = [p.to_url() for p in custom_proxy_nodes]
+        save_proxies_file("\n".join(lines))
         save_nodes_file(get_combined_nodes())
+
+        if was_cancelled:
+            check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} diperiksa. ({len(custom_proxy_nodes)} Proxy Live berhasil masuk ke daftar bawah)."
+        else:
+            check_state["last_result"] = f"Pengecekan selesai: {check_state['total']} proxy diperiksa. {len(custom_proxy_nodes)} Proxy Live masuk ke daftar bawah ({check_state['dead']} proxy mati dibuang)."
+
     finally:
         check_state["is_checking"] = False
         check_state["cancel_requested"] = False
         _check_cancel_event = None
+        save_nodes_file(get_combined_nodes())
+        lines = [p.to_url() for p in custom_proxy_nodes]
+        save_proxies_file("\n".join(lines))
 
 async def auto_supervisor_loop():
     while True:
@@ -676,32 +685,16 @@ async def get_raw_proxies():
 
 @app.post("/api/proxies")
 async def update_proxies(payload: ProxiesUpdateRequest, bg_tasks: BackgroundTasks):
-    global custom_proxy_nodes
     save_proxies_file(payload.raw_text)
-
-    if payload.mode == "replace":
-        supervisor.stop_filtered_harvesters(custom_proxy_nodes, "proxy")
-        custom_proxy_nodes = []
-        base_id = 1001
-    else:
-        base_id = max([n.id for n in custom_proxy_nodes] + [1000]) + 1
-
     parsed = parse_proxies_text(payload.raw_text)
-    for idx, p in enumerate(parsed):
-        p.id = base_id + idx
-        p.node_type = "proxy"
-        p.relay_status = "STOPPED"
-
-    custom_proxy_nodes.extend(parsed)
-    save_nodes_file(get_combined_nodes())
-    bg_tasks.add_task(run_health_check_task)
+    bg_tasks.add_task(run_health_check_task, remove_dead=True, raw_text=payload.raw_text)
 
     return {
         "success": True,
         "count": len(parsed),
         "proxy_total": len(custom_proxy_nodes),
         "total_nodes": len(get_combined_nodes()),
-        "message": f"Berhasil memuat {len(parsed)} proxy node."
+        "message": f"Daftar {len(parsed)} proxy diterima. Engine mulai memeriksa kesehatan (hanya proxy LIVE yang akan dimasukkan ke tabel bawah)."
     }
 
 
@@ -741,8 +734,8 @@ async def stop_check_endpoint():
 @app.post("/api/proxies/purge-dead")
 async def purge_dead_proxies():
     global custom_proxy_nodes
-    initial_count = len(custom_proxy_nodes)
-    custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is not False and n.status != "ERROR"]
+    # Keep only strictly verified LIVE proxies (is_alive is True)
+    custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is True and n.status != "ERROR"]
     removed = initial_count - len(custom_proxy_nodes)
     for idx, p in enumerate(custom_proxy_nodes):
         p.id = 1001 + idx
@@ -753,7 +746,7 @@ async def purge_dead_proxies():
         "success": True,
         "removed": removed,
         "remaining": len(custom_proxy_nodes),
-        "message": f"Berhasil menghapus {removed} proxy mati. Sisa {len(custom_proxy_nodes)} proxy."
+        "message": f"Berhasil membersihkan {removed} proxy dead/unverified. Sisa {len(custom_proxy_nodes)} proxy LIVE aktif di tabel."
     }
 
 

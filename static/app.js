@@ -385,7 +385,10 @@ function renderTable(nodesList) {
     let html = '';
     const serverIp = (currentStatusData ? currentStatusData.server_ip : '127.0.0.1') || '127.0.0.1';
 
-    for (const node of filtered) {
+    const MAX_RENDER = 150;
+    const toRender = filtered.slice(0, MAX_RENDER);
+
+    for (const node of toRender) {
         const isSS = (node.node_type === 'surfshark');
         const typeBadge = isSS
             ? `<span class="tn-badge tn-badge-surfshark">🦈 SURFSHARK</span>`
@@ -450,6 +453,17 @@ function renderTable(nodesList) {
             </tr>
         `;
     }
+
+    if (filtered.length > MAX_RENDER) {
+        html += `
+            <tr>
+                <td colspan="10" style="text-align: center; color: #38bdf8; padding: 14px; font-weight: 700; background: rgba(0, 229, 255, 0.05); border-top: 1px solid var(--border-color);">
+                    ℹ️ Menampilkan ${MAX_RENDER} dari ${filtered.length} node (Gunakan filter pencarian di kanan atas untuk mencari ID, IP, atau negara tertentu).
+                </td>
+            </tr>
+        `;
+    }
+
     nodesTbody.innerHTML = html;
 }
 

@@ -375,9 +375,10 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNod
 
 async def check_all_proxies(
     proxies: List[ProxyNode],
-    max_concurrency: int = 30,
-    timeout: float = 4.0,
+    max_concurrency: int = 50,
+    timeout: float = 3.5,
     progress_callback: Optional[Callable[..., None]] = None,
+    on_live_callback: Optional[Callable[[ProxyNode], Any]] = None,
     cancel_event: Optional[asyncio.Event] = None
 ) -> List[ProxyNode]:
     sem = asyncio.Semaphore(max_concurrency)
@@ -409,8 +410,17 @@ async def check_all_proxies(
                 done_count += 1
                 if res.is_alive:
                     alive_count += 1
+                    if on_live_callback:
+                        try:
+                            if asyncio.iscoroutinefunction(on_live_callback):
+                                await on_live_callback(res)
+                            else:
+                                on_live_callback(res)
+                        except Exception:
+                            pass
                 else:
                     dead_count += 1
+
                 if progress_callback:
                     try:
                         progress_callback(done_count, total, alive_count, dead_count, target_display)
