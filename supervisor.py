@@ -107,6 +107,10 @@ class NodeSupervisor:
                 node.status = "ERROR"
                 return False
 
+            if not node.pub_key and node.endpoint:
+                from surfshark import find_pubkey_for_endpoint
+                node.pub_key = find_pubkey_for_endpoint(node.endpoint) or ""
+
             if not node.endpoint or not node.pub_key:
                 node.error = "Endpoint atau PubKey Surfshark tidak valid"
                 node.status = "ERROR"

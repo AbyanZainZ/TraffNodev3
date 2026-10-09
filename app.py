@@ -16,7 +16,7 @@ from pydantic import BaseModel
 import psutil
 
 from checker import ProxyNode, parse_proxies_text, check_all_proxies
-from surfshark import pick_surfshark_servers, load_surfshark_servers
+from surfshark import pick_surfshark_servers, load_surfshark_servers, find_pubkey_for_endpoint
 from supervisor import NodeSupervisor
 from relay_engine import RelayManager
 from bandwidth import BandwidthTracker, format_bytes
@@ -135,8 +135,10 @@ def load_nodes_file() -> List[ProxyNode]:
                 node.host = item.get("host")
                 node.port = item.get("port")
                 node.user = item.get("user")
-                node.endpoint = item.get("endpoint")
-                node.pub_key = item.get("pub_key")
+                node.endpoint = item.get("endpoint") or ""
+                node.pub_key = item.get("pub_key") or item.get("pubkey") or ""
+                if node.node_type == "surfshark" and not node.pub_key and node.endpoint:
+                    node.pub_key = find_pubkey_for_endpoint(node.endpoint) or ""
                 node.city = item.get("city", "")
                 node.country = item.get("country", "Unknown")
                 node.exit_ip = item.get("exit_ip")
@@ -534,7 +536,7 @@ async def get_system_status():
 @app.post("/api/config")
 async def update_config_endpoint(payload: ConfigUpdateRequest):
     global config
-    if payload.traff_token is not None:
+    if payload.traff_token is not None and payload.traff_token.strip():
         config["traff_token"] = payload.traff_token.strip()
     if payload.dashboard_port is not None:
         config["dashboard_port"] = max(1, min(65535, payload.dashboard_port))
@@ -544,7 +546,7 @@ async def update_config_endpoint(payload: ConfigUpdateRequest):
         config["dashboard_username"] = payload.dashboard_username.strip()
     if payload.dashboard_password is not None and payload.dashboard_password.strip():
         config["dashboard_password"] = payload.dashboard_password.strip()
-    if payload.surfshark_private_key is not None:
+    if payload.surfshark_private_key is not None and payload.surfshark_private_key.strip():
         config["surfshark_private_key"] = payload.surfshark_private_key.strip()
     if payload.surfshark_region is not None:
         config["surfshark_region"] = payload.surfshark_region
@@ -590,7 +592,7 @@ async def generate_surfshark_pool(payload: SurfsharkGenerateRequest):
         node.host = "127.0.0.1"
         node.port = start_port + idx
         node.endpoint = s.get("endpoint", "")
-        node.pub_key = s.get("pub_key", "")
+        node.pub_key = s.get("pubkey") or s.get("pub_key") or find_pubkey_for_endpoint(node.endpoint) or ""
         node.city = s.get("city", "")
         node.country = s.get("country", region.upper())
         node.update_device_name()

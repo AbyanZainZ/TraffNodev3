@@ -517,15 +517,18 @@ if (btnGenerateSs) {
         }
         btnGenerateSs.disabled = true;
         try {
+            const configPayload = {
+                surfshark_private_key: privkey,
+                surfshark_region: cfgSurfsharkRegion.value,
+                surfshark_node_count: parseInt(cfgSurfsharkCount.value) || 50
+            };
+            const curToken = (cfgToken ? cfgToken.value : '').trim();
+            if (curToken) configPayload.traff_token = curToken;
+
             await fetch('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    traff_token: cfgToken.value || '',
-                    surfshark_private_key: privkey,
-                    surfshark_region: cfgSurfsharkRegion.value,
-                    surfshark_node_count: parseInt(cfgSurfsharkCount.value) || 50
-                })
+                body: JSON.stringify(configPayload)
             });
 
             const res = await fetch('/api/surfshark/generate', {

@@ -200,6 +200,7 @@ class ProxyNode:
             "country": self.country,
             "city": self.city,
             "endpoint": self.endpoint,
+            "pub_key": self.pub_key,
             "device_name": self.device_name or f"Node-{self.id}",
             "status": self.status,
             "relay_status": self.relay_status,

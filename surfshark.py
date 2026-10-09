@@ -61,3 +61,25 @@ def pick_surfshark_servers(count: int = 50, region: str = "all") -> List[Dict[st
 
     random.shuffle(unique_pool)
     return unique_pool[:min(count, len(unique_pool))]
+
+
+_ENDPOINT_PUBKEY_CACHE: Optional[Dict[str, str]] = None
+
+def get_endpoint_pubkey_map() -> Dict[str, str]:
+    global _ENDPOINT_PUBKEY_CACHE
+    if _ENDPOINT_PUBKEY_CACHE is None:
+        servers = load_surfshark_servers()
+        _ENDPOINT_PUBKEY_CACHE = {}
+        for s in servers:
+            ep = s.get("endpoint", "")
+            pk = s.get("pubkey") or s.get("pub_key") or ""
+            if ep and pk:
+                _ENDPOINT_PUBKEY_CACHE[ep.strip()] = pk.strip()
+    return _ENDPOINT_PUBKEY_CACHE
+
+def find_pubkey_for_endpoint(endpoint: Optional[str]) -> Optional[str]:
+    if not endpoint:
+        return None
+    ep_map = get_endpoint_pubkey_map()
+    return ep_map.get(endpoint.strip())
+
