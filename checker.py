@@ -294,7 +294,7 @@ async def check_socks4_handshake(proxy_host: str, proxy_port: int, timeout: floa
         return False, None, None, str(e)[:30]
 
 
-async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNode:
+async def check_single_proxy(proxy: ProxyNode, timeout: float = 2.5) -> ProxyNode:
     if not proxy.is_valid:
         proxy.is_alive = False
         proxy.error = "Format proxy tidak valid"
@@ -327,6 +327,7 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNod
 
         # HTTP / SOCKS5 via httpx
         proxy_url = proxy.to_url(proto=proto)
+        is_host_unreachable = False
         for target_url in CHECK_TARGETS:
             t0 = time.time()
             try:
@@ -353,19 +354,27 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNod
             except (httpx.ConnectTimeout, httpx.TimeoutException) as te:
                 proxy.last_checked = time.time()
                 last_err = f"Timeout ({timeout}s)"
+                is_host_unreachable = True
                 break
             except (httpx.ConnectError, httpx.ProxyError) as ce:
                 proxy.last_checked = time.time()
                 last_err = "Connection Refused / Closed"
+                is_host_unreachable = True
                 break
             except Exception as e:
                 proxy.last_checked = time.time()
                 err_str = str(e).strip()
                 if "timed out" in err_str.lower() or "timeout" in err_str.lower():
                     last_err = f"Timeout ({timeout}s)"
+                    is_host_unreachable = True
                     break
                 else:
                     last_err = err_str[:35] or "Connection Failed"
+
+        if is_host_unreachable:
+            # If TCP port connection timed out or was refused, the host/port is completely unreachable.
+            # Avoid wasting time testing subsequent protocols against an unreachable port.
+            break
 
     proxy.is_alive = False
     proxy.error = last_err
@@ -375,8 +384,8 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNod
 
 async def check_all_proxies(
     proxies: List[ProxyNode],
-    max_concurrency: int = 50,
-    timeout: float = 3.5,
+    max_concurrency: int = 150,
+    timeout: float = 2.5,
     progress_callback: Optional[Callable[..., None]] = None,
     on_live_callback: Optional[Callable[[ProxyNode], Any]] = None,
     cancel_event: Optional[asyncio.Event] = None

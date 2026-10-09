@@ -663,17 +663,22 @@ if (btnSaveProxies) {
             showToast("Textarea proxy masih kosong.", true);
             return;
         }
+        const selThreads = document.getElementById('cfg-check-threads');
+        const threads = selThreads ? (parseInt(selThreads.value) || 150) : 150;
+
         btnSaveProxies.disabled = true;
         try {
             const res = await fetch('/api/proxies', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ raw_text: text, mode: "replace" })
+                body: JSON.stringify({ raw_text: text, mode: "replace", concurrency: threads })
             });
             const data = await res.json();
             if (data.success) {
                 showToast(data.message);
                 fetchStatus();
+            } else {
+                showToast(data.message || "Gagal menyimpan proxy.", true);
             }
         } catch (e) {
             showToast("Gagal menyimpan proxy.", true);
@@ -688,28 +693,29 @@ if (btnCheckProxies) {
     btnCheckProxies.addEventListener('click', async () => {
         const ta = document.getElementById('proxies-textarea');
         const rawText = ta ? ta.value.trim() : '';
-        if (!rawText && (!cntProxyTotal || parseInt(cntProxyTotal.textContent || '0') === 0)) {
+        const pxCount = (cntPillPx ? parseInt(cntPillPx.textContent || '0') : 0);
+        if (!rawText && pxCount === 0) {
             showToast("Daftar proxy masih kosong. Silakan masukkan proxy di textarea terlebih dahulu.", true);
             return;
         }
+
+        const selThreads = document.getElementById('cfg-check-threads');
+        const threads = selThreads ? (parseInt(selThreads.value) || 150) : 150;
 
         btnCheckProxies.disabled = true;
         btnCheckAndPurge.disabled = true;
         btnCheckProxies.innerHTML = "⏳ Starting...";
 
         try {
-            if (rawText) {
-                fetch('/api/proxies', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ raw_text: rawText, mode: "replace" })
-                }).catch(() => {});
-            }
-
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: false, raw_text: rawText || null })
+                body: JSON.stringify({
+                    remove_dead: false,
+                    raw_text: rawText || null,
+                    concurrency: threads,
+                    timeout: 2.5
+                })
             });
             const data = await res.json();
             if (data.success) {
@@ -739,28 +745,29 @@ if (btnCheckAndPurge) {
     btnCheckAndPurge.addEventListener('click', async () => {
         const ta = document.getElementById('proxies-textarea');
         const rawText = ta ? ta.value.trim() : '';
-        if (!rawText && (!cntProxyTotal || parseInt(cntProxyTotal.textContent || '0') === 0)) {
+        const pxCount = (cntPillPx ? parseInt(cntPillPx.textContent || '0') : 0);
+        if (!rawText && pxCount === 0) {
             showToast("Daftar proxy masih kosong. Silakan masukkan proxy di textarea terlebih dahulu.", true);
             return;
         }
+
+        const selThreads = document.getElementById('cfg-check-threads');
+        const threads = selThreads ? (parseInt(selThreads.value) || 150) : 150;
 
         btnCheckProxies.disabled = true;
         btnCheckAndPurge.disabled = true;
         btnCheckAndPurge.innerHTML = "⏳ Starting...";
 
         try {
-            if (rawText) {
-                fetch('/api/proxies', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ raw_text: rawText, mode: "replace" })
-                }).catch(() => {});
-            }
-
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: true, raw_text: rawText || null })
+                body: JSON.stringify({
+                    remove_dead: true,
+                    raw_text: rawText || null,
+                    concurrency: threads,
+                    timeout: 2.5
+                })
             });
             const data = await res.json();
             if (data.success) {
@@ -781,6 +788,7 @@ if (btnCheckAndPurge) {
             btnCheckProxies.disabled = false;
             btnCheckAndPurge.disabled = false;
             btnCheckAndPurge.innerHTML = "🧪 TEST & HAPUS DEAD";
+            btnCheckProxies.innerHTML = "⚡ TEST PROXY";
         }
     });
 }

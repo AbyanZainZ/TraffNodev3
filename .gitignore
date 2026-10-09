@@ -4,3 +4,7 @@ __pycache__/
 venv/
 .env
 *.log
+nodes.json
+proxies.txt
+candidates.txt
+live_proxies.json

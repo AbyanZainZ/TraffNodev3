@@ -25,6 +25,8 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 PROXIES_PATH = BASE_DIR / "proxies.txt"
 NODES_PATH = BASE_DIR / "nodes.json"
+CANDIDATES_PATH = BASE_DIR / "candidates.txt"
+LIVE_PROXIES_BACKUP_PATH = BASE_DIR / "live_proxies.json"
 STATIC_DIR = BASE_DIR / "static"
 
 DEFAULT_CONFIG = {
@@ -41,7 +43,7 @@ DEFAULT_CONFIG = {
     "relay_start_port": 10001,
     "relay_client_user": "gemini",
     "relay_client_pass": "gemini",
-    "check_timeout": 4.0,
+    "check_timeout": 2.5,
     "max_instances": 1000,
     "auto_heal_interval_seconds": 30,
     "auto_start_on_boot": False
@@ -76,10 +78,13 @@ class AuthUpdateRequest(BaseModel):
 class CheckRequest(BaseModel):
     remove_dead: Optional[bool] = False
     raw_text: Optional[str] = None
+    concurrency: Optional[int] = 150
+    timeout: Optional[float] = 2.5
 
 class ProxiesUpdateRequest(BaseModel):
     raw_text: str
     mode: Optional[str] = "replace"
+    concurrency: Optional[int] = 150
 
 class SurfsharkGenerateRequest(BaseModel):
     region: str = "all"
@@ -112,6 +117,34 @@ def save_proxies_file(content: str):
     with open(PROXIES_PATH, "w", encoding="utf-8") as f:
         f.write(content)
 
+def load_candidates_file() -> str:
+    if CANDIDATES_PATH.exists():
+        try:
+            with open(CANDIDATES_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception:
+            pass
+    return ""
+
+def save_candidates_file(content: str):
+    try:
+        with open(CANDIDATES_PATH, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        print(f"[TraffNode V3] Error saving candidates.txt: {e}")
+
+def save_live_proxies_backup(nodes_list: List[ProxyNode]):
+    try:
+        live_data = [
+            n.to_dict(include_password=True)
+            for n in nodes_list
+            if getattr(n, "node_type", "proxy") == "proxy" and getattr(n, "is_alive", False) is True
+        ]
+        with open(LIVE_PROXIES_BACKUP_PATH, "w", encoding="utf-8") as f:
+            json.dump(live_data, f, indent=2)
+    except Exception as e:
+        print(f"[TraffNode V3] Error saving live_proxies.json: {e}")
+
 def save_nodes_file(nodes_list: List[ProxyNode]):
     try:
         data = [n.to_dict(include_password=True) for n in nodes_list]
@@ -121,11 +154,11 @@ def save_nodes_file(nodes_list: List[ProxyNode]):
         print(f"[TraffNode V3] Error saving nodes.json: {e}")
 
 def load_nodes_file() -> List[ProxyNode]:
+    loaded: List[ProxyNode] = []
     if NODES_PATH.exists():
         try:
             with open(NODES_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            loaded: List[ProxyNode] = []
             for item in data:
                 node = ProxyNode(item.get("raw", ""), index=item.get("id", len(loaded) + 1))
                 if item.get("password"):
@@ -152,10 +185,37 @@ def load_nodes_file() -> List[ProxyNode]:
                 if node.node_type == "proxy" and node.is_alive is False:
                     continue
                 loaded.append(node)
-            return loaded
         except Exception as e:
             print(f"[TraffNode V3] Error loading nodes.json: {e}")
-    return []
+
+    # Fallback recovery: if nodes.json had no proxy nodes, restore from live_proxies.json
+    px_nodes = [n for n in loaded if getattr(n, "node_type", "proxy") == "proxy"]
+    if not px_nodes and LIVE_PROXIES_BACKUP_PATH.exists():
+        try:
+            with open(LIVE_PROXIES_BACKUP_PATH, "r", encoding="utf-8") as bf:
+                bdata = json.load(bf)
+            for item in bdata:
+                node = ProxyNode(item.get("raw", ""), index=item.get("id", len(loaded) + 1))
+                if item.get("password"):
+                    node.password = item.get("password")
+                node.node_type = "proxy"
+                node.protocol = item.get("protocol", "HTTP").lower()
+                node.host = item.get("host")
+                node.port = item.get("port")
+                node.user = item.get("user")
+                node.city = item.get("city", "")
+                node.country = item.get("country", "Unknown")
+                node.exit_ip = item.get("exit_ip")
+                node.device_name = item.get("device_name", "")
+                node.status = "IDLE"
+                node.relay_status = "STOPPED"
+                node.is_alive = True
+                node.latency_ms = item.get("latency_ms")
+                loaded.append(node)
+        except Exception as be:
+            print(f"[TraffNode V3] Backup recovery error: {be}")
+
+    return loaded
 
 _cached_public_ip = None
 
@@ -264,17 +324,23 @@ check_state = {
     "last_result": None
 }
 
-async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[str] = None):
+async def run_health_check_task(
+    remove_dead: bool = False,
+    raw_text: Optional[str] = None,
+    concurrency: int = 150,
+    timeout: float = 2.5
+):
     global custom_proxy_nodes, _check_cancel_event
     if check_state["is_checking"]:
         return
 
-    # Parse candidates from raw_text, proxies.txt, or existing custom_proxy_nodes
+    # Parse candidates from raw_text, candidates.txt, proxies.txt, or existing custom_proxy_nodes
     candidates_text = ""
     if raw_text is not None and raw_text.strip():
         candidates_text = raw_text.strip()
+        save_candidates_file(candidates_text)
     else:
-        candidates_text = load_proxies_file().strip()
+        candidates_text = load_candidates_file().strip() or load_proxies_file().strip()
 
     candidates: List[ProxyNode] = []
     if candidates_text:
@@ -287,42 +353,65 @@ async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[st
         check_state["last_result"] = "Tidak ada proxy untuk dicek (daftar proxy kosong)."
         return
 
-    # User requirement:
-    # "proxy yang live masuk ke daftar yang di bawah"
-    # "proxy yang masih checking , gak perlu di masukin ke bawah , bikin lag doang"
-    # Candidates are kept in checking queue only. custom_proxy_nodes is cleared for live-only promotion.
-    supervisor.stop_filtered_harvesters(custom_proxy_nodes, "proxy")
-    custom_proxy_nodes = []
-    save_nodes_file(get_combined_nodes())
+    # Deduplicate candidate list to avoid duplicate checking
+    seen_cand = set()
+    unique_candidates: List[ProxyNode] = []
+    for c in candidates:
+        if not c.is_valid or not c.host or not c.port:
+            continue
+        key = f"{c.host}:{c.port}"
+        if key not in seen_cand:
+            seen_cand.add(key)
+            unique_candidates.append(c)
+    candidates = unique_candidates
 
+    # CRITICAL: Preserve existing verified LIVE proxies!
+    # DO NOT clear custom_proxy_nodes or stop running harvesters.
     _check_cancel_event = asyncio.Event()
     check_state["is_checking"] = True
     check_state["cancel_requested"] = False
     check_state["remove_dead"] = remove_dead
     check_state["total"] = len(candidates)
     check_state["done"] = 0
-    check_state["alive"] = 0
+    check_state["alive"] = len([n for n in custom_proxy_nodes if getattr(n, "is_alive", False) is True])
     check_state["dead"] = 0
     check_state["current_target"] = ""
     check_state["last_result"] = None
 
     live_nodes_lock = asyncio.Lock()
-    next_node_id = 1001
 
     async def _on_proxy_live(node: ProxyNode):
-        nonlocal next_node_id
         async with live_nodes_lock:
-            node.id = next_node_id
-            next_node_id += 1
-            node.node_type = "proxy"
-            node.status = "IDLE"
-            node.relay_status = "STOPPED"
-            custom_proxy_nodes.append(node)
-            # Periodic persist so newly discovered live nodes appear in API in real-time
-            if len(custom_proxy_nodes) % 5 == 0 or len(custom_proxy_nodes) <= 10:
-                save_nodes_file(get_combined_nodes())
-                lines = [p.to_url() for p in custom_proxy_nodes]
-                save_proxies_file("\n".join(lines))
+            # Check if this proxy is already in custom_proxy_nodes
+            existing = next((n for n in custom_proxy_nodes if n.host == node.host and n.port == node.port), None)
+            if existing:
+                existing.is_alive = True
+                existing.latency_ms = node.latency_ms
+                existing.country = node.country
+                existing.exit_ip = node.exit_ip
+                existing.protocol = node.protocol
+                existing.error = None
+                existing.last_checked = time.time()
+                existing.update_device_name()
+            else:
+                used_ids = {n.id for n in get_combined_nodes()}
+                nid = 1001
+                while nid in used_ids:
+                    nid += 1
+                node.id = nid
+                node.node_type = "proxy"
+                node.status = "IDLE"
+                node.relay_status = "STOPPED"
+                node.is_alive = True
+                node.update_device_name()
+                custom_proxy_nodes.append(node)
+
+            # IMMEDIATE AUTO-PERSISTENCE:
+            # Write to disk on EVERY live proxy detected so nothing is ever lost!
+            save_nodes_file(get_combined_nodes())
+            live_lines = [p.to_url() for p in custom_proxy_nodes if getattr(p, "is_alive", False) is True]
+            save_proxies_file("\n".join(live_lines))
+            save_live_proxies_backup(custom_proxy_nodes)
 
     def _on_prog(done, total, alive, dead, current_target=""):
         check_state["done"] = done
@@ -334,8 +423,8 @@ async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[st
     try:
         checked_proxies = await check_all_proxies(
             candidates,
-            max_concurrency=60,
-            timeout=config.get("check_timeout", 3.5),
+            max_concurrency=concurrency,
+            timeout=timeout,
             progress_callback=_on_prog,
             on_live_callback=_on_proxy_live,
             cancel_event=_check_cancel_event
@@ -343,23 +432,34 @@ async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[st
 
         was_cancelled = check_state["cancel_requested"] or (_check_cancel_event and _check_cancel_event.is_set())
 
-        # Final save of live proxies
-        lines = [p.to_url() for p in custom_proxy_nodes]
-        save_proxies_file("\n".join(lines))
+        # If remove_dead was requested, purge any existing node that failed in this check
+        if remove_dead and not was_cancelled:
+            tested_dead_pairs = {(p.host, p.port) for p in checked_proxies if p.is_alive is False}
+            custom_proxy_nodes = [
+                n for n in custom_proxy_nodes
+                if not (n.host, n.port) in tested_dead_pairs
+            ]
+
+        # Final persistent sync to disk
+        live_count = len([n for n in custom_proxy_nodes if getattr(n, "is_alive", False) is True])
         save_nodes_file(get_combined_nodes())
+        live_lines = [p.to_url() for p in custom_proxy_nodes if getattr(p, "is_alive", False) is True]
+        save_proxies_file("\n".join(live_lines))
+        save_live_proxies_backup(custom_proxy_nodes)
 
         if was_cancelled:
-            check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} diperiksa. ({len(custom_proxy_nodes)} Proxy Live berhasil masuk ke daftar bawah)."
+            check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} diperiksa. {live_count} Proxy LIVE tersimpan permanen di database."
         else:
-            check_state["last_result"] = f"Pengecekan selesai: {check_state['total']} proxy diperiksa. {len(custom_proxy_nodes)} Proxy Live masuk ke daftar bawah ({check_state['dead']} proxy mati dibuang)."
+            check_state["last_result"] = f"Pengecekan selesai: {check_state['total']} diperiksa. {live_count} Proxy LIVE tersimpan permanen di database ({check_state['dead']} proxy mati diabaikan)."
 
     finally:
         check_state["is_checking"] = False
         check_state["cancel_requested"] = False
         _check_cancel_event = None
         save_nodes_file(get_combined_nodes())
-        lines = [p.to_url() for p in custom_proxy_nodes]
-        save_proxies_file("\n".join(lines))
+        live_lines = [p.to_url() for p in custom_proxy_nodes if getattr(p, "is_alive", False) is True]
+        save_proxies_file("\n".join(live_lines))
+        save_live_proxies_backup(custom_proxy_nodes)
 
 async def auto_supervisor_loop():
     while True:
@@ -680,21 +780,26 @@ async def generate_surfshark_pool(payload: SurfsharkGenerateRequest):
 
 @app.get("/api/proxies/raw", response_class=PlainTextResponse)
 async def get_raw_proxies():
-    return load_proxies_file()
+    live_px = [p.to_url() for p in custom_proxy_nodes if getattr(p, "is_alive", False) is True]
+    if live_px:
+        return "\n".join(live_px)
+    return load_proxies_file().strip() or load_candidates_file().strip()
 
 
 @app.post("/api/proxies")
 async def update_proxies(payload: ProxiesUpdateRequest, bg_tasks: BackgroundTasks):
-    save_proxies_file(payload.raw_text)
+    save_candidates_file(payload.raw_text)
     parsed = parse_proxies_text(payload.raw_text)
-    bg_tasks.add_task(run_health_check_task, remove_dead=True, raw_text=payload.raw_text)
+    concurrency = getattr(payload, "concurrency", 150) or 150
+    concurrency = max(20, min(200, concurrency))
+    bg_tasks.add_task(run_health_check_task, remove_dead=False, raw_text=payload.raw_text, concurrency=concurrency)
 
     return {
         "success": True,
         "count": len(parsed),
         "proxy_total": len(custom_proxy_nodes),
         "total_nodes": len(get_combined_nodes()),
-        "message": f"Daftar {len(parsed)} proxy diterima. Engine mulai memeriksa kesehatan (hanya proxy LIVE yang akan dimasukkan ke tabel bawah)."
+        "message": f"Daftar {len(parsed)} proxy diterima. Engine mulai memverifikasi ({concurrency} threads) dan otomatis menyimpan setiap proxy LIVE ke database."
     }
 
 
@@ -705,18 +810,27 @@ async def trigger_check(bg_tasks: BackgroundTasks, payload: Optional[CheckReques
 
     raw_text = payload.raw_text.strip() if (payload and payload.raw_text) else None
     remove_dead = bool(payload and payload.remove_dead)
+    concurrency = int(payload.concurrency) if (payload and payload.concurrency) else 150
+    timeout = float(payload.timeout) if (payload and payload.timeout) else 2.5
+    concurrency = max(20, min(200, concurrency))
 
     has_text = bool(raw_text and len(raw_text) > 0)
-    txt_file = load_proxies_file().strip()
+    txt_file = load_candidates_file().strip() or load_proxies_file().strip()
 
     if not has_text and not custom_proxy_nodes and not txt_file:
         return {
             "success": False,
-            "message": "Daftar proxy kosong! Klik '💾 SIMPAN PROXY' atau tempel daftar proxy di textarea terlebih dahulu."
+            "message": "Daftar proxy kosong! Masukkan daftar proxy di textarea terlebih dahulu."
         }
 
-    bg_tasks.add_task(run_health_check_task, remove_dead=remove_dead, raw_text=raw_text)
-    msg = "Pengecekan proxy dimulai (otomatis hapus proxy mati)." if remove_dead else "Pengecekan kesehatan proxy dimulai."
+    bg_tasks.add_task(
+        run_health_check_task,
+        remove_dead=remove_dead,
+        raw_text=raw_text,
+        concurrency=concurrency,
+        timeout=timeout
+    )
+    msg = f"Pengecekan proxy dimulai ({concurrency} threads, otomatis simpan proxy LIVE ke database)."
     return {"success": True, "message": msg}
 
 
@@ -734,19 +848,20 @@ async def stop_check_endpoint():
 @app.post("/api/proxies/purge-dead")
 async def purge_dead_proxies():
     global custom_proxy_nodes
-    # Keep only strictly verified LIVE proxies (is_alive is True)
+    initial_count = len(custom_proxy_nodes)
     custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is True and n.status != "ERROR"]
     removed = initial_count - len(custom_proxy_nodes)
     for idx, p in enumerate(custom_proxy_nodes):
         p.id = 1001 + idx
-    lines = [p.to_url() for p in custom_proxy_nodes]
-    save_proxies_file("\n".join(lines))
+    live_lines = [p.to_url() for p in custom_proxy_nodes]
+    save_proxies_file("\n".join(live_lines))
     save_nodes_file(get_combined_nodes())
+    save_live_proxies_backup(custom_proxy_nodes)
     return {
         "success": True,
         "removed": removed,
         "remaining": len(custom_proxy_nodes),
-        "message": f"Berhasil membersihkan {removed} proxy dead/unverified. Sisa {len(custom_proxy_nodes)} proxy LIVE aktif di tabel."
+        "message": f"Berhasil membersihkan {removed} proxy dead/unverified. Sisa {len(custom_proxy_nodes)} proxy LIVE aktif di database."
     }
 
 
