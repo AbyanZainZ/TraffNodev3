@@ -1,0 +1,16 @@
+{
+  "host": "0.0.0.0",
+  "dashboard_port": 8888,
+  "traff_token": "",
+  "surfshark_private_key": "",
+  "surfshark_region": "all",
+  "surfshark_node_count": 50,
+  "surfshark_start_port": 21000,
+  "relay_start_port": 10001,
+  "relay_client_user": "gemini",
+  "relay_client_pass": "gemini",
+  "check_timeout": 5.0,
+  "max_instances": 1000,
+  "auto_heal_interval_seconds": 30,
+  "auto_start_on_boot": false
+}
