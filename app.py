@@ -1221,6 +1221,63 @@ async def export_relay_client():
     )
 
 
+@app.get("/api/relay/active-list")
+async def get_active_relay_list():
+    server_ip = get_server_ip()
+    u = config.get("relay_client_user", "gemini")
+    p = config.get("relay_client_pass", "gemini")
+    all_nodes = get_combined_nodes()
+
+    active_nodes = [n for n in all_nodes if n.relay_status == "RUNNING" and n.relay_port]
+
+    ip_port_lines = [f"{server_ip}:{n.relay_port}" for n in active_nodes]
+    ip_port_user_pass_lines = [f"{server_ip}:{n.relay_port}:{u}:{p}" for n in active_nodes]
+    http_lines = [f"http://{u}:{p}@{server_ip}:{n.relay_port}" for n in active_nodes]
+    socks5_lines = [f"socks5://{u}:{p}@{server_ip}:{n.relay_port}" for n in active_nodes]
+
+    return {
+        "success": True,
+        "server_ip": server_ip,
+        "count": len(active_nodes),
+        "user": u,
+        "pass": p,
+        "ports": [n.relay_port for n in active_nodes],
+        "formats": {
+            "ip_port": ip_port_lines,
+            "ip_port_user_pass": ip_port_user_pass_lines,
+            "http": http_lines,
+            "socks5": socks5_lines
+        }
+    }
+
+
+@app.get("/api/export/relay-active")
+async def export_active_relay(fmt: str = "ip_port"):
+    server_ip = get_server_ip()
+    u = config.get("relay_client_user", "gemini")
+    p = config.get("relay_client_pass", "gemini")
+    all_nodes = get_combined_nodes()
+
+    active_nodes = [n for n in all_nodes if n.relay_status == "RUNNING" and n.relay_port]
+
+    lines = []
+    for n in active_nodes:
+        if fmt == "ip_port_user_pass":
+            lines.append(f"{server_ip}:{n.relay_port}:{u}:{p}")
+        elif fmt == "http":
+            lines.append(f"http://{u}:{p}@{server_ip}:{n.relay_port}")
+        elif fmt == "socks5":
+            lines.append(f"socks5://{u}:{p}@{server_ip}:{n.relay_port}")
+        else:
+            lines.append(f"{server_ip}:{n.relay_port}")
+
+    content = "\n".join(lines)
+    return PlainTextResponse(
+        content,
+        headers={"Content-Disposition": f"attachment; filename=traffnode_active_relays_{int(time.time())}.txt"}
+    )
+
+
 @app.get("/api/export/live-proxies")
 async def export_live_proxies(alive_only: bool = True):
     all_proxies = custom_proxy_nodes

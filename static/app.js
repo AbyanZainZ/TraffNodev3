@@ -329,6 +329,8 @@ function renderDashboard(data) {
     if (cntPillSs) cntPillSs.textContent = ssTotal;
     if (cntPillPx) cntPillPx.textContent = pxTotal;
     if (cntPillRelay) cntPillRelay.textContent = rRunning;
+    const cntExtractBadge = document.getElementById('cnt-extract-relay-badge');
+    if (cntExtractBadge) cntExtractBadge.textContent = rRunning;
     if (cntPillHarvester) cntPillHarvester.textContent = hRunning;
     if (cntPillError) cntPillError.textContent = deadCount;
     if (cntPurgeError) cntPurgeError.textContent = deadCount;
@@ -1144,6 +1146,118 @@ window.addEventListener('click', (e) => {
     if (e.target === logModal) {
         logModal.style.display = 'none';
         currentLogNodeId = null;
+    }
+});
+
+// Extract Active Relay Modal Controller
+let currentActiveRelayData = null;
+let currentRelayFmt = 'ip_port';
+
+const extractRelayModal = document.getElementById('extract-relay-modal');
+const btnExtractRelay = document.getElementById('btn-extract-relay');
+const btnTabExtractRelay = document.getElementById('btn-tab-extract-relay');
+const btnTableExtractRelay = document.getElementById('btn-table-extract-relay');
+const btnCloseExtractModal = document.getElementById('btn-close-extract-modal');
+const extractServerIp = document.getElementById('extract-server-ip');
+const extractActiveCount = document.getElementById('extract-active-count');
+const extractRelayTextarea = document.getElementById('extract-relay-textarea');
+const extractRelayLinesHint = document.getElementById('extract-relay-lines-hint');
+const btnCopyExtracted = document.getElementById('btn-copy-extracted');
+const btnDownloadExtracted = document.getElementById('btn-download-extracted');
+
+async function openExtractRelayModal() {
+    if (extractRelayModal) extractRelayModal.style.display = 'block';
+    if (extractRelayTextarea) extractRelayTextarea.value = "Memuat daftar port relay aktif...";
+
+    try {
+        const res = await fetch('/api/relay/active-list');
+        if (!res.ok) throw new Error("Gagal mengambil data relay");
+        const data = await res.json();
+        currentActiveRelayData = data;
+
+        if (extractServerIp) extractServerIp.textContent = data.server_ip || '--';
+        if (extractActiveCount) extractActiveCount.textContent = `${data.count || 0} Port Aktif`;
+
+        renderRelayFormatContent();
+    } catch (e) {
+        if (extractRelayTextarea) extractRelayTextarea.value = "# Gagal memuat port relay aktif dari server.";
+    }
+}
+
+function renderRelayFormatContent() {
+    if (!currentActiveRelayData || !extractRelayTextarea) return;
+    const formats = currentActiveRelayData.formats || {};
+    const lines = formats[currentRelayFmt] || [];
+
+    if (lines.length === 0) {
+        extractRelayTextarea.value = "# Belum ada port relay yang berstatus aktif/RUNNING.\n# Silakan buka port relay melalui tombol '⚡ BUKA SEMUA PORT RELAY' atau klik 'Buka Port' pada worker tertentu terlebih dahulu.";
+        if (extractRelayLinesHint) extractRelayLinesHint.textContent = "0 port relay aktif";
+    } else {
+        extractRelayTextarea.value = lines.join('\n');
+        if (extractRelayLinesHint) extractRelayLinesHint.textContent = `${lines.length} port relay aktif siap digunakan`;
+    }
+}
+
+window.switchRelayFmt = function(fmt) {
+    currentRelayFmt = fmt;
+    ['btn-fmt-ip-port', 'btn-fmt-auth', 'btn-fmt-http', 'btn-fmt-socks5'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('active');
+    });
+
+    const activeBtnMap = {
+        'ip_port': 'btn-fmt-ip-port',
+        'ip_port_user_pass': 'btn-fmt-auth',
+        'http': 'btn-fmt-http',
+        'socks5': 'btn-fmt-socks5'
+    };
+    const activeEl = document.getElementById(activeBtnMap[fmt]);
+    if (activeEl) activeEl.classList.add('active');
+
+    renderRelayFormatContent();
+};
+
+if (btnExtractRelay) btnExtractRelay.addEventListener('click', openExtractRelayModal);
+if (btnTabExtractRelay) btnTabExtractRelay.addEventListener('click', openExtractRelayModal);
+if (btnTableExtractRelay) btnTableExtractRelay.addEventListener('click', openExtractRelayModal);
+
+if (btnCloseExtractModal) {
+    btnCloseExtractModal.addEventListener('click', () => {
+        if (extractRelayModal) extractRelayModal.style.display = 'none';
+    });
+}
+
+if (btnCopyExtracted) {
+    btnCopyExtracted.addEventListener('click', async () => {
+        if (!extractRelayTextarea || !extractRelayTextarea.value) return;
+        try {
+            await navigator.clipboard.writeText(extractRelayTextarea.value);
+            showToast("✅ Berhasil menyalin port relay ke clipboard!");
+        } catch (e) {
+            extractRelayTextarea.select();
+            document.execCommand('copy');
+            showToast("✅ Berhasil menyalin port relay ke clipboard!");
+        }
+    });
+}
+
+if (btnDownloadExtracted) {
+    btnDownloadExtracted.addEventListener('click', () => {
+        window.open(`/api/export/relay-active?fmt=${currentRelayFmt}`, '_blank');
+    });
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        if (extractRelayModal && extractRelayModal.style.display === 'block') {
+            extractRelayModal.style.display = 'none';
+        }
+    }
+});
+
+window.addEventListener('click', (e) => {
+    if (e.target === extractRelayModal) {
+        extractRelayModal.style.display = 'none';
     }
 });
 

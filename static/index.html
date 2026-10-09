@@ -99,6 +99,9 @@
             <button type="button" class="tn-btn tn-btn-action" id="btn-purge-error" style="background: rgba(255, 23, 68, 0.2); border-color: #ff1744; color: #ff5252; padding: 8px 14px; font-weight: 700;" title="Bersihkan semua node yang error atau offline">
                 🧹 Bersihkan Error (<span id="cnt-purge-error">0</span>)
             </button>
+            <button type="button" class="tn-btn tn-btn-action" id="btn-extract-relay" style="background: rgba(0, 229, 255, 0.18); border-color: #00e5ff; color: #00e5ff; padding: 8px 14px; font-weight: 700;" title="Extract daftar port relay yang aktif (contoh: 94.237.58.244:10005)">
+                📋 Extract Relay Aktif
+            </button>
             <button type="button" class="tn-btn tn-btn-action" id="btn-export-relay" style="background: rgba(0, 229, 255, 0.15); border-color: #00e5ff; color: #00e5ff; padding: 8px 14px; font-weight: 700;" title="Download daftar proxy format IP:Port:User:Pass untuk bot/browser">
                 📥 Export Relay Client
             </button>
@@ -292,6 +295,9 @@
                         <button type="button" class="tn-btn tn-btn-danger" id="btn-stop-relay-active">
                             🛑 TUTUP SEMUA PORT RELAY
                         </button>
+                        <button type="button" class="tn-btn tn-btn-action" id="btn-tab-extract-relay" style="background: rgba(0, 229, 255, 0.18); border-color: #00e5ff; color: #00e5ff; font-weight: 700;">
+                            📋 EXTRACT PORT RELAY AKTIF
+                        </button>
                     </div>
 
                     <div style="margin-top: 14px; padding: 10px 14px; background: var(--bg-input); border-radius: 6px; font-size: 11px; color: #94a3b8;">
@@ -377,7 +383,10 @@
                         <button type="button" class="tn-pill" onclick="setTableFilter('harvester_running', this)" data-filter="harvester_running" id="pill-harvester">▶ Harvester On (<span id="cnt-pill-harvester">0</span>)</button>
                         <button type="button" class="tn-pill" onclick="setTableFilter('error', this)" data-filter="error" id="pill-error">⚠️ Error (<span id="cnt-pill-error">0</span>)</button>
                     </div>
-                    <input type="text" id="table-filter" class="tn-input" style="width: 200px; padding: 4px 10px; font-size: 11.5px;" placeholder="🔍 Cari ID, IP, Negara...">
+                    <input type="text" id="table-filter" class="tn-input" style="width: 170px; padding: 4px 10px; font-size: 11.5px;" placeholder="🔍 Cari ID, IP...">
+                    <button type="button" class="tn-btn tn-btn-action" id="btn-table-extract-relay" style="background: rgba(0, 229, 255, 0.15); border-color: #00e5ff; color: #00e5ff; font-weight: 700; padding: 4px 10px; font-size: 11px;" title="Extract port relay yang aktif">
+                        ⚡ Extract Port Relay (<span id="cnt-extract-relay-badge">0</span>)
+                    </button>
                 </div>
             </div>
 
@@ -465,6 +474,52 @@
                 </div>
             </div>
             <pre id="log-modal-body" class="tn-modal-body"></pre>
+        </div>
+    </div>
+
+    <!-- EXTRACT ACTIVE RELAY MODAL -->
+    <div id="extract-relay-modal" class="tn-modal">
+        <div class="tn-modal-content" style="max-width: 680px;">
+            <div class="tn-modal-header">
+                <div>
+                    <span id="extract-relay-modal-title" style="font-weight: 700; color: #00e5ff; font-size: 14.5px;">⚡ Extract Port Relay Aktif</span>
+                    <div id="extract-relay-modal-subtitle" style="font-size: 11px; color: var(--text-muted); margin-top: 3px;">
+                        Server IP: <span id="extract-server-ip" style="color: #38bdf8; font-weight: 700;">--</span> | <span id="extract-active-count" style="color: #00e676; font-weight: 700;">0 Port Aktif</span>
+                    </div>
+                </div>
+                <span class="tn-modal-close" id="btn-close-extract-modal">&times;</span>
+            </div>
+
+            <div style="padding: 12px 0 6px 0;">
+                <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">
+                    <button type="button" class="tn-btn-action active" id="btn-fmt-ip-port" onclick="switchRelayFmt('ip_port')" style="font-size: 11px; font-weight: 700;">
+                        ⚡ IP:PORT (94.237.58.244:10005)
+                    </button>
+                    <button type="button" class="tn-btn-action" id="btn-fmt-auth" onclick="switchRelayFmt('ip_port_user_pass')" style="font-size: 11px; font-weight: 700;">
+                        🔑 IP:PORT:USER:PASS
+                    </button>
+                    <button type="button" class="tn-btn-action" id="btn-fmt-http" onclick="switchRelayFmt('http')" style="font-size: 11px; font-weight: 700;">
+                        🌐 HTTP URL
+                    </button>
+                    <button type="button" class="tn-btn-action" id="btn-fmt-socks5" onclick="switchRelayFmt('socks5')" style="font-size: 11px; font-weight: 700;">
+                        ⚡ SOCKS5 URL
+                    </button>
+                </div>
+
+                <textarea id="extract-relay-textarea" class="tn-textarea" style="height: 250px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre;" readonly placeholder="Memuat port relay aktif..."></textarea>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; flex-wrap: wrap; gap: 8px;">
+                    <span id="extract-relay-lines-hint" style="font-size: 11px; color: #38bdf8; font-weight: 700;">0 baris port aktif</span>
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" class="tn-btn tn-btn-primary" id="btn-copy-extracted" style="font-weight: 700;">
+                            📋 SALIN SEMUA
+                        </button>
+                        <button type="button" class="tn-btn tn-btn-success" id="btn-download-extracted" style="font-weight: 700;">
+                            💾 DOWNLOAD .TXT
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
