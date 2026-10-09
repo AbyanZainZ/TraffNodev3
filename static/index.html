@@ -33,6 +33,13 @@
                     <span class="tn-chip-label">SYSTEM STATE</span>
                     <span class="tn-chip-value" style="color: #00e676;" id="daemon-status-text">ONLINE</span>
                 </div>
+                <div class="tn-chip" id="chip-user-badge" style="display: none;">
+                    <span class="tn-chip-label">USER</span>
+                    <span class="tn-chip-value" id="val-auth-user" style="color: #00e5ff;">admin</span>
+                </div>
+                <button type="button" class="tn-btn tn-btn-action" id="btn-logout" style="display: none; padding: 6px 12px; border-color: #ff5252; color: #ff5252; font-weight: 700;" onclick="doLogout()">
+                    🚪 Keluar
+                </button>
             </div>
         </header>
 
@@ -112,6 +119,9 @@
                 <button type="button" class="tn-tab-btn" role="tab" id="tab-btn-gateway" onclick="switchConfigTab('gateway')">
                     ⚡ TAB 2: PROXY GATEWAY RELAY (INBOUND AUTH & PORTS)
                 </button>
+                <button type="button" class="tn-tab-btn" role="tab" id="tab-btn-security" onclick="switchConfigTab('security')">
+                    🔐 TAB 3: KEAMANAN & KREDENSIAL
+                </button>
             </div>
 
             <!-- TAB 1: NODE POOLS & HARVESTER -->
@@ -131,6 +141,7 @@
                             <div style="display: flex; gap: 6px;">
                                 <input type="password" id="cfg-surfshark-key" class="tn-input" placeholder="Masukkan Private Key Surfshark (Base64)">
                                 <button type="button" class="tn-btn tn-btn-action" id="btn-toggle-pw" onclick="toggleKeyVisibility()">👁️ Tampilkan</button>
+                                <button type="button" class="tn-btn tn-btn-primary" id="btn-save-ss-key" style="white-space: nowrap;">💾 Simpan Key</button>
                             </div>
                         </div>
 
@@ -176,18 +187,40 @@
                             <textarea id="proxies-textarea" class="tn-textarea" placeholder="Contoh:&#10;191.96.254.138:6185:user01:pass01&#10;socks5://user:pass@host:port&#10;http://31.58.9.4:6077"></textarea>
                         </div>
 
-                        <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between;">
+                        <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
                             <span class="tn-subtitle" id="lbl-proxy-count-hint">0 baris proxy</span>
-                            <div style="display: flex; gap: 6px;">
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                                 <button type="button" class="tn-btn tn-btn-primary" id="btn-save-proxies">
                                     💾 SIMPAN PROXY
                                 </button>
-                                <button type="button" class="tn-btn tn-btn-action" id="btn-check-proxies">
+                                <button type="button" class="tn-btn tn-btn-action" id="btn-check-proxies" title="Test kesehatan semua proxy tanpa menghapus">
                                     🩺 TEST PROXY
+                                </button>
+                                <button type="button" class="tn-btn tn-btn-success" id="btn-check-and-purge" title="Test semua proxy dan otomatis hapus yang mati (hanya simpan yang LIVE)">
+                                    ⚡ TEST & HAPUS DEAD
+                                </button>
+                                <button type="button" class="tn-btn tn-btn-action" id="btn-purge-dead-proxies" style="border-color: #ff5252; color: #ff5252;" title="Hapus seluruh proxy yang mati atau error saat ini">
+                                    🧹 Hapus Dead (<span id="cnt-dead-proxy">0</span>)
                                 </button>
                                 <button type="button" class="tn-btn tn-btn-danger" id="btn-clear-proxies">
                                     🗑️ Reset PX
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- Live Progress Banner for Proxy Checking -->
+                        <div id="proxy-check-banner" style="display: none; margin-top: 12px; padding: 12px 14px; background: rgba(0, 229, 255, 0.08); border: 1px solid #00e5ff; border-radius: 6px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 12px; font-weight: 700;">
+                                <span style="color: #00e5ff;">🩺 Sedang Memeriksa Kesehatan Proxy...</span>
+                                <span id="proxy-check-progress-text" style="color: #ffffff;">0 / 0</span>
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 7px; overflow: hidden;">
+                                <div id="proxy-check-progress-bar" style="background: #00e5ff; width: 0%; height: 100%; transition: width 0.2s;"></div>
+                            </div>
+                            <div style="display: flex; gap: 16px; margin-top: 8px; font-size: 11px;">
+                                <span style="color: #00e676;">🟢 Live Aktif: <strong id="proxy-check-live-cnt">0</strong></span>
+                                <span style="color: #ff5252;">🔴 Dead: <strong id="proxy-check-dead-cnt">0</strong></span>
+                                <span id="proxy-check-result-msg" style="color: #94a3b8; margin-left: auto;"></span>
                             </div>
                         </div>
                     </div>
@@ -252,6 +285,64 @@
                     </div>
                 </div>
             </div>
+
+            <!-- TAB 3: KEAMANAN & KREDENSIAL COCKPIT -->
+            <div class="tn-tab-content" id="tab-content-security" role="tabpanel">
+                <div style="background: var(--bg-card-sub); border: 1px solid var(--border-color); border-radius: 8px; padding: 18px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 8px;">
+                        <div>
+                            <h3 style="font-size: 14px; font-weight: 700; color: #00e5ff;">
+                                🔐 Keamanan & Kredensial Login Cockpit
+                            </h3>
+                            <p style="font-size: 11.5px; color: var(--text-muted); margin-top: 4px;">
+                                Lindungi dashboard TraffNode V3 Anda dari akses publik tanpa otentikasi.
+                            </p>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; background: var(--bg-input); padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border-color);">
+                            <label for="cfg-auth-toggle" style="font-size: 11.5px; font-weight: 700; color: #f8fafc; cursor: pointer;">
+                                Proteksi Login:
+                            </label>
+                            <input type="checkbox" id="cfg-auth-toggle" checked style="transform: scale(1.2); cursor: pointer;">
+                            <span id="lbl-auth-status-text" style="font-size: 11.5px; font-weight: 700; color: #00e676;">AKTIF</span>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 16px;">
+                        <div class="tn-input-group">
+                            <label for="cfg-auth-username">Username Dashboard:</label>
+                            <input type="text" id="cfg-auth-username" class="tn-input" value="admin" placeholder="admin">
+                        </div>
+
+                        <div class="tn-input-group">
+                            <label for="cfg-auth-password">Password Baru:</label>
+                            <div style="display: flex; gap: 6px;">
+                                <input type="password" id="cfg-auth-password" class="tn-input" placeholder="Masukkan password baru">
+                                <button type="button" class="tn-btn tn-btn-action" id="btn-toggle-auth-pw" onclick="toggleAuthPwVisibility()">👁️</button>
+                            </div>
+                        </div>
+
+                        <div class="tn-input-group">
+                            <label for="cfg-dashboard-port">Port Dashboard Web:</label>
+                            <input type="number" id="cfg-dashboard-port" class="tn-input" value="80" min="1" max="65535">
+                            <span style="font-size: 10px; color: var(--text-sub);">Default: 80 (HTTP). Port aktif saat ini di VPS.</span>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" class="tn-btn tn-btn-primary" id="btn-save-auth-cfg" style="padding: 10px 20px; font-weight: 700;">
+                            💾 SIMPAN KREDENSIAL KEAMANAN
+                        </button>
+                    </div>
+
+                    <div style="margin-top: 18px; padding: 14px 18px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 6px; font-size: 11.5px; color: #94a3b8; line-height: 1.6;">
+                        <strong style="color: #00e5ff;">💡 Cara Mengganti / Reset Password dari Terminal VPS (Jika Lupa):</strong><br>
+                        Anda dapat mereset kredensial langsung dari terminal SSH VPS tanpa login ke web:<br>
+                        <code style="display: block; margin-top: 6px; padding: 8px 12px; background: #060d15; border-radius: 4px; color: #00e676; font-family: monospace;">python3 /opt/traffnode/app.py set-password admin password_baru_kamu</code>
+                        atau melalui konfigurasi JSON satu baris:<br>
+                        <code style="display: block; margin-top: 4px; padding: 8px 12px; background: #060d15; border-radius: 4px; color: #00e676; font-family: monospace;">sed -i 's/"dashboard_password": ".*"/"dashboard_password": "password_baru"/' /opt/traffnode/config.json && systemctl restart traffnode</code>
+                    </div>
+                </div>
+            </div>
         </main>
 
         <!-- LIVE WORKER MONITOR TABLE -->
@@ -305,9 +396,48 @@
 
         <!-- FOOTER -->
         <footer class="tn-footer">
-            <span>⚡ TraffNode V3: Hybrid Passive Income Harvester & Authenticated Proxy Gateway (Port 8888)</span>
+            <span>⚡ TraffNode V3: Hybrid Passive Income Harvester & Authenticated Proxy Gateway</span>
             <span id="health-status-text">System Daemon Ready</span>
         </footer>
+    </div>
+
+    <!-- LOGIN OVERLAY MODAL -->
+    <div id="login-overlay" class="tn-login-overlay" style="display: none;">
+        <div class="tn-login-card">
+            <div class="tn-login-header">
+                <span style="font-size: 36px; display: block; margin-bottom: 6px;">⚡</span>
+                <h2 style="font-size: 19px; font-weight: 800; color: #ffffff; letter-spacing: 0.5px;">TRAFFNODE V3 COCKPIT</h2>
+                <div style="margin-top: 6px;">
+                    <span class="tn-tag" style="background: #003366; color: #00e5ff; border-color: #0088cc;">MISSION CONTROL AUTHENTICATION</span>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 10px;">
+                    Masukkan username dan password misi untuk mengakses dashboard.
+                </p>
+            </div>
+
+            <div id="login-error-banner" style="display: none; margin-bottom: 14px; padding: 10px 14px; background: rgba(255, 23, 68, 0.15); border: 1px solid #ff1744; border-radius: 6px; color: #ff5252; font-size: 12px; text-align: center; font-weight: 600;">
+                Username atau password salah.
+            </div>
+
+            <form id="login-form" onsubmit="event.preventDefault(); submitLogin();">
+                <div class="tn-input-group" style="margin-bottom: 14px; text-align: left;">
+                    <label for="login-username" style="font-size: 11px; color: var(--text-muted); font-weight: 700; display: block; margin-bottom: 4px;">USERNAME:</label>
+                    <input type="text" id="login-username" class="tn-input" placeholder="admin" required autocomplete="username" style="width: 100%; height: 38px;">
+                </div>
+
+                <div class="tn-input-group" style="margin-bottom: 20px; text-align: left;">
+                    <label for="login-password" style="font-size: 11px; color: var(--text-muted); font-weight: 700; display: block; margin-bottom: 4px;">PASSWORD:</label>
+                    <div style="display: flex; gap: 6px;">
+                        <input type="password" id="login-password" class="tn-input" placeholder="••••••••" required autocomplete="current-password" style="flex: 1; height: 38px;">
+                        <button type="button" class="tn-btn tn-btn-action" id="btn-login-toggle-pw" onclick="toggleLoginPwVisibility()" style="height: 38px;">👁️</button>
+                    </div>
+                </div>
+
+                <button type="submit" class="tn-btn tn-btn-primary" id="btn-login-submit" style="width: 100%; height: 42px; font-size: 13.5px; font-weight: 700; letter-spacing: 0.5px;">
+                    🚀 MASUK KE COCKPIT
+                </button>
+            </form>
+        </div>
     </div>
 
     <!-- WORKER LOG MODAL -->
@@ -327,7 +457,7 @@
     <!-- TOAST NOTIFICATION -->
     <div id="tn-toast" class="tn-toast"></div>
 
-    <script src="/static/app.js?v=3.0"></script>
+    <script src="/static/app.js?v=3.1"></script>
     <script>
         function toggleKeyVisibility() {
             const input = document.getElementById('cfg-surfshark-key');
@@ -339,6 +469,32 @@
             } else {
                 input.type = 'password';
                 btn.textContent = '👁️ Tampilkan';
+            }
+        }
+
+        function toggleAuthPwVisibility() {
+            const input = document.getElementById('cfg-auth-password');
+            const btn = document.getElementById('btn-toggle-auth-pw');
+            if (!input || !btn) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = '🔒';
+            } else {
+                input.type = 'password';
+                btn.textContent = '👁️';
+            }
+        }
+
+        function toggleLoginPwVisibility() {
+            const input = document.getElementById('login-password');
+            const btn = document.getElementById('btn-login-toggle-pw');
+            if (!input || !btn) return;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = '🔒';
+            } else {
+                input.type = 'password';
+                btn.textContent = '👁️';
             }
         }
 

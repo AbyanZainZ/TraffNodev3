@@ -7,8 +7,10 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
+import secrets
+import base64
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response, status
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psutil
@@ -27,7 +29,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 DEFAULT_CONFIG = {
     "host": "0.0.0.0",
-    "dashboard_port": 8888,
+    "dashboard_port": 80,
+    "dashboard_auth_enabled": True,
+    "dashboard_username": "admin",
+    "dashboard_password": "admin123",
     "traff_token": "",
     "surfshark_private_key": "",
     "surfshark_region": "all",
@@ -36,23 +41,40 @@ DEFAULT_CONFIG = {
     "relay_start_port": 10001,
     "relay_client_user": "gemini",
     "relay_client_pass": "gemini",
-    "check_timeout": 5.0,
+    "check_timeout": 4.0,
     "max_instances": 1000,
     "auto_heal_interval_seconds": 30,
     "auto_start_on_boot": False
 }
 
+ACTIVE_SESSIONS: Dict[str, float] = {}
+
 class ConfigUpdateRequest(BaseModel):
-    traff_token: str
-    dashboard_port: Optional[int] = 8888
-    max_instances: Optional[int] = 1000
-    surfshark_private_key: Optional[str] = ""
-    surfshark_region: Optional[str] = "all"
-    surfshark_node_count: Optional[int] = 50
-    surfshark_start_port: Optional[int] = 21000
-    relay_start_port: Optional[int] = 10001
-    relay_client_user: Optional[str] = "gemini"
-    relay_client_pass: Optional[str] = "gemini"
+    traff_token: Optional[str] = None
+    dashboard_port: Optional[int] = None
+    dashboard_auth_enabled: Optional[bool] = None
+    dashboard_username: Optional[str] = None
+    dashboard_password: Optional[str] = None
+    max_instances: Optional[int] = None
+    surfshark_private_key: Optional[str] = None
+    surfshark_region: Optional[str] = None
+    surfshark_node_count: Optional[int] = None
+    surfshark_start_port: Optional[int] = None
+    relay_start_port: Optional[int] = None
+    relay_client_user: Optional[str] = None
+    relay_client_pass: Optional[str] = None
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class AuthUpdateRequest(BaseModel):
+    auth_enabled: Optional[bool] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+class CheckRequest(BaseModel):
+    remove_dead: Optional[bool] = False
 
 class ProxiesUpdateRequest(BaseModel):
     raw_text: str
@@ -191,24 +213,90 @@ def find_node_by_id(node_id: int) -> Optional[ProxyNode]:
             return n
     return None
 
-async def run_health_check_task():
-    global is_checking, custom_proxy_nodes
-    if is_checking or not custom_proxy_nodes:
+def is_authenticated(request: Request) -> bool:
+    if not config.get("dashboard_auth_enabled", True):
+        return True
+
+    token = request.cookies.get("tn_session")
+    if token and token in ACTIVE_SESSIONS:
+        if time.time() < ACTIVE_SESSIONS[token]:
+            return True
+        else:
+            ACTIVE_SESSIONS.pop(token, None)
+
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        b_tok = auth_header[7:].strip()
+        if b_tok in ACTIVE_SESSIONS:
+            if time.time() < ACTIVE_SESSIONS[b_tok]:
+                return True
+            else:
+                ACTIVE_SESSIONS.pop(b_tok, None)
+    elif auth_header.startswith("Basic "):
+        try:
+            raw = base64.b64decode(auth_header[6:].strip()).decode("utf-8")
+            u, p = raw.split(":", 1)
+            cfg_u = str(config.get("dashboard_username", "admin"))
+            cfg_p = str(config.get("dashboard_password", "admin123"))
+            if u == cfg_u and p == cfg_p:
+                return True
+        except Exception:
+            pass
+
+    return False
+
+check_state = {
+    "is_checking": False,
+    "total": 0,
+    "done": 0,
+    "alive": 0,
+    "dead": 0,
+    "last_result": None
+}
+
+async def run_health_check_task(remove_dead: bool = False):
+    global custom_proxy_nodes
+    if check_state["is_checking"] or not custom_proxy_nodes:
         return
-    is_checking = True
+    check_state["is_checking"] = True
+    check_state["total"] = len(custom_proxy_nodes)
+    check_state["done"] = 0
+    check_state["alive"] = 0
+    check_state["dead"] = 0
+
+    def _on_prog(done, total, alive, dead):
+        check_state["done"] = done
+        check_state["total"] = total
+        check_state["alive"] = alive
+        check_state["dead"] = dead
+
     try:
         checked_proxies = await check_all_proxies(
             custom_proxy_nodes,
-            max_concurrency=20,
-            timeout=config.get("check_timeout", 5.0)
+            max_concurrency=30,
+            timeout=config.get("check_timeout", 4.0),
+            progress_callback=_on_prog
         )
         checked_map = {n.id: n for n in checked_proxies}
         for i, n in enumerate(custom_proxy_nodes):
             if n.id in checked_map:
                 custom_proxy_nodes[i] = checked_map[n.id]
+
+        if remove_dead:
+            initial_count = len(custom_proxy_nodes)
+            custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is True]
+            removed = initial_count - len(custom_proxy_nodes)
+            for idx, p in enumerate(custom_proxy_nodes):
+                p.id = 1001 + idx
+            lines = [p.to_url() for p in custom_proxy_nodes]
+            save_proxies_file("\n".join(lines))
+            check_state["last_result"] = f"Pengecekan selesai: {len(custom_proxy_nodes)} Live aktif, {removed} Dead dihapus."
+        else:
+            check_state["last_result"] = f"Pengecekan selesai: {check_state['alive']} Live, {check_state['dead']} Dead."
+
         save_nodes_file(get_combined_nodes())
     finally:
-        is_checking = False
+        check_state["is_checking"] = False
 
 async def auto_supervisor_loop():
     while True:
@@ -256,6 +344,104 @@ app = FastAPI(title="TraffNode V3 Cockpit", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if (
+        path == "/"
+        or path.startswith("/static")
+        or path == "/favicon.ico"
+        or path in ("/api/login", "/api/logout", "/api/auth/status")
+    ):
+        return await call_next(request)
+
+    if not config.get("dashboard_auth_enabled", True):
+        return await call_next(request)
+
+    if is_authenticated(request):
+        return await call_next(request)
+
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Unauthorized. Login diperlukan untuk mengakses TraffNode V3.", "authenticated": False}
+    )
+
+
+@app.get("/api/auth/status")
+async def get_auth_status(request: Request):
+    auth_enabled = bool(config.get("dashboard_auth_enabled", True))
+    if not auth_enabled:
+        return {"auth_enabled": False, "logged_in": True, "username": "admin"}
+    logged_in = is_authenticated(request)
+    u = config.get("dashboard_username", "admin") if logged_in else None
+    return {"auth_enabled": True, "logged_in": logged_in, "username": u}
+
+
+@app.post("/api/login")
+async def do_login(payload: LoginRequest, response: Response):
+    cfg_user = str(config.get("dashboard_username", "admin"))
+    cfg_pass = str(config.get("dashboard_password", "admin123"))
+
+    if payload.username == cfg_user and payload.password == cfg_pass:
+        token = secrets.token_hex(32)
+        ACTIVE_SESSIONS[token] = time.time() + (86400 * 30)
+        response.set_cookie(
+            key="tn_session",
+            value=token,
+            max_age=86400 * 30,
+            httponly=True,
+            samesite="lax",
+            secure=False
+        )
+        return {"success": True, "token": token, "username": cfg_user, "message": "Login berhasil."}
+
+    return JSONResponse(status_code=401, content={"success": False, "detail": "Username atau password salah."})
+
+
+@app.post("/api/logout")
+async def do_logout(request: Request, response: Response):
+    token = request.cookies.get("tn_session")
+    if token and token in ACTIVE_SESSIONS:
+        ACTIVE_SESSIONS.pop(token, None)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        b_tok = auth_header[7:].strip()
+        ACTIVE_SESSIONS.pop(b_tok, None)
+    response.delete_cookie(key="tn_session")
+    return {"success": True, "message": "Berhasil logout."}
+
+
+@app.post("/api/auth/update")
+async def update_auth_credentials(payload: AuthUpdateRequest, response: Response):
+    global config
+    if payload.auth_enabled is not None:
+        config["dashboard_auth_enabled"] = payload.auth_enabled
+    if payload.username and payload.username.strip():
+        config["dashboard_username"] = payload.username.strip()
+    if payload.password and payload.password.strip():
+        config["dashboard_password"] = payload.password.strip()
+
+    save_config(config)
+
+    token = secrets.token_hex(32)
+    ACTIVE_SESSIONS[token] = time.time() + (86400 * 30)
+    response.set_cookie(
+        key="tn_session",
+        value=token,
+        max_age=86400 * 30,
+        httponly=True,
+        samesite="lax",
+        secure=False
+    )
+    return {
+        "success": True,
+        "token": token,
+        "username": config.get("dashboard_username"),
+        "auth_enabled": config.get("dashboard_auth_enabled"),
+        "message": "Kredensial dashboard berhasil diperbarui."
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     index_file = STATIC_DIR / "index.html"
@@ -284,6 +470,8 @@ async def get_system_status():
     px_nodes = [n for n in custom_proxy_nodes]
     px_harvester_running = sum(1 for n in px_nodes if n.status == "RUNNING")
     px_relay_running = sum(1 for n in px_nodes if n.relay_status == "RUNNING")
+    px_alive = sum(1 for n in px_nodes if n.is_alive is True)
+    px_dead = sum(1 for n in px_nodes if n.is_alive is False)
 
     sys_bw = bandwidth_tracker.get_system_bandwidth()
     cpu_percent = psutil.cpu_percent(interval=None)
@@ -302,8 +490,11 @@ async def get_system_status():
             "relay_start_port": config.get("relay_start_port", 10001),
             "relay_client_user": config.get("relay_client_user", "gemini"),
             "relay_client_pass": config.get("relay_client_pass", "gemini"),
-            "dashboard_port": config.get("dashboard_port", 8888)
+            "dashboard_port": config.get("dashboard_port", 80),
+            "dashboard_auth_enabled": config.get("dashboard_auth_enabled", True),
+            "dashboard_username": config.get("dashboard_username", "admin")
         },
+        "check_state": check_state,
         "metrics": {
             "total_nodes": len(all_nodes),
             "harvester_running": harvester_running,
@@ -317,6 +508,8 @@ async def get_system_status():
             "surfshark_harvester_running": ss_harvester_running,
             "surfshark_relay_running": ss_relay_running,
             "proxy_total": len(px_nodes),
+            "proxy_alive": px_alive,
+            "proxy_dead": px_dead,
             "proxy_harvester_running": px_harvester_running,
             "proxy_relay_running": px_relay_running,
             "bandwidth": {
@@ -341,18 +534,25 @@ async def get_system_status():
 @app.post("/api/config")
 async def update_config_endpoint(payload: ConfigUpdateRequest):
     global config
-    config["traff_token"] = payload.traff_token.strip()
-    if payload.dashboard_port:
-        config["dashboard_port"] = max(1024, min(65000, payload.dashboard_port))
+    if payload.traff_token is not None:
+        config["traff_token"] = payload.traff_token.strip()
+    if payload.dashboard_port is not None:
+        config["dashboard_port"] = max(1, min(65535, payload.dashboard_port))
+    if payload.dashboard_auth_enabled is not None:
+        config["dashboard_auth_enabled"] = payload.dashboard_auth_enabled
+    if payload.dashboard_username is not None and payload.dashboard_username.strip():
+        config["dashboard_username"] = payload.dashboard_username.strip()
+    if payload.dashboard_password is not None and payload.dashboard_password.strip():
+        config["dashboard_password"] = payload.dashboard_password.strip()
     if payload.surfshark_private_key is not None:
         config["surfshark_private_key"] = payload.surfshark_private_key.strip()
-    if payload.surfshark_region:
+    if payload.surfshark_region is not None:
         config["surfshark_region"] = payload.surfshark_region
-    if payload.surfshark_node_count:
+    if payload.surfshark_node_count is not None:
         config["surfshark_node_count"] = payload.surfshark_node_count
-    if payload.surfshark_start_port:
+    if payload.surfshark_start_port is not None:
         config["surfshark_start_port"] = payload.surfshark_start_port
-    if payload.relay_start_port:
+    if payload.relay_start_port is not None:
         config["relay_start_port"] = payload.relay_start_port
         relay_manager.start_port = payload.relay_start_port
     if payload.relay_client_user is not None:
@@ -448,12 +648,32 @@ async def update_proxies(payload: ProxiesUpdateRequest, bg_tasks: BackgroundTask
 
 
 @app.post("/api/check")
-async def trigger_check(bg_tasks: BackgroundTasks):
-    global is_checking
-    if is_checking:
+async def trigger_check(bg_tasks: BackgroundTasks, payload: Optional[CheckRequest] = None):
+    if check_state["is_checking"]:
         return {"success": False, "message": "Pengecekan proxy sedang berlangsung."}
-    bg_tasks.add_task(run_health_check_task)
-    return {"success": True, "message": "Pengecekan kesehatan custom proxy dimulai."}
+    remove_dead = bool(payload and payload.remove_dead)
+    bg_tasks.add_task(run_health_check_task, remove_dead=remove_dead)
+    msg = "Pengecekan proxy dimulai (otomatis hapus proxy mati)." if remove_dead else "Pengecekan kesehatan proxy dimulai."
+    return {"success": True, "message": msg}
+
+
+@app.post("/api/proxies/purge-dead")
+async def purge_dead_proxies():
+    global custom_proxy_nodes
+    initial_count = len(custom_proxy_nodes)
+    custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is not False and n.status != "ERROR"]
+    removed = initial_count - len(custom_proxy_nodes)
+    for idx, p in enumerate(custom_proxy_nodes):
+        p.id = 1001 + idx
+    lines = [p.to_url() for p in custom_proxy_nodes]
+    save_proxies_file("\n".join(lines))
+    save_nodes_file(get_combined_nodes())
+    return {
+        "success": True,
+        "removed": removed,
+        "remaining": len(custom_proxy_nodes),
+        "message": f"Berhasil menghapus {removed} proxy mati. Sisa {len(custom_proxy_nodes)} proxy."
+    }
 
 
 # Harvester controls
@@ -467,7 +687,10 @@ async def start_harvester_all():
     if not all_nodes:
         raise HTTPException(status_code=400, detail="Belum ada node yang siap dijalankan.")
 
-    to_start = [n for n in all_nodes if n.status != "RUNNING"]
+    to_start = [n for n in all_nodes if n.status != "RUNNING" and (n.is_alive is not False and n.status != "ERROR")]
+    if not to_start:
+        raise HTTPException(status_code=400, detail="Tidak ada node aktif yang siap dijalankan (seluruh node dead atau sudah running).")
+
     for n in to_start:
         n.status = "STARTING"
     save_nodes_file(all_nodes)
@@ -607,8 +830,8 @@ async def start_hybrid_all():
     if not all_nodes:
         raise HTTPException(status_code=400, detail="Belum ada node yang siap dijalankan.")
 
-    # 1. Start all harvesters
-    to_start = [n for n in all_nodes if n.status != "RUNNING"]
+    # 1. Start all harvesters (skip dead/error nodes)
+    to_start = [n for n in all_nodes if n.status != "RUNNING" and (n.is_alive is not False and n.status != "ERROR")]
     for n in to_start:
         n.status = "STARTING"
     save_nodes_file(all_nodes)
@@ -839,8 +1062,24 @@ async def export_live_config():
 
 
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) >= 2 and sys.argv[1] in ("set-password", "--set-password", "passwd"):
+        if len(sys.argv) < 4:
+            print("Penggunaan: python3 app.py set-password <username> <new_password>")
+            sys.exit(1)
+        new_u = sys.argv[2].strip()
+        new_p = sys.argv[3].strip()
+        cfg = load_config()
+        cfg["dashboard_username"] = new_u
+        cfg["dashboard_password"] = new_p
+        save_config(cfg)
+        print(f"✅ Kredensial TraffNode V3 berhasil diubah!")
+        print(f"Username : {new_u}")
+        print(f"Password : {new_p}")
+        sys.exit(0)
+
     import uvicorn
     cfg = load_config()
-    port = cfg.get("dashboard_port", 8888)
+    port = cfg.get("dashboard_port", 80)
     print(f"TraffNode V3 Cockpit starting on http://{cfg.get('host', '0.0.0.0')}:{port}")
     uvicorn.run("app:app", host=cfg.get("host", "0.0.0.0"), port=port, reload=False)

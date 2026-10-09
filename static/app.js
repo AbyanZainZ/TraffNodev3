@@ -19,6 +19,7 @@ const cfgToken = document.getElementById('cfg-token');
 const btnSaveToken = document.getElementById('btn-save-token');
 
 const cfgSurfsharkKey = document.getElementById('cfg-surfshark-key');
+const btnSaveSsKey = document.getElementById('btn-save-ss-key');
 const cfgSurfsharkRegion = document.getElementById('cfg-surfshark-region');
 const cfgSurfsharkCount = document.getElementById('cfg-surfshark-count');
 const btnGenerateSs = document.getElementById('btn-generate-ss');
@@ -28,7 +29,34 @@ const proxiesTextarea = document.getElementById('proxies-textarea');
 const lblProxyCountHint = document.getElementById('lbl-proxy-count-hint');
 const btnSaveProxies = document.getElementById('btn-save-proxies');
 const btnCheckProxies = document.getElementById('btn-check-proxies');
+const btnCheckAndPurge = document.getElementById('btn-check-and-purge');
+const btnPurgeDeadProxies = document.getElementById('btn-purge-dead-proxies');
+const cntDeadProxy = document.getElementById('cnt-dead-proxy');
 const btnClearProxies = document.getElementById('btn-clear-proxies');
+
+const proxyCheckBanner = document.getElementById('proxy-check-banner');
+const proxyCheckProgressText = document.getElementById('proxy-check-progress-text');
+const proxyCheckProgressBar = document.getElementById('proxy-check-progress-bar');
+const proxyCheckLiveCnt = document.getElementById('proxy-check-live-cnt');
+const proxyCheckDeadCnt = document.getElementById('proxy-check-dead-cnt');
+const proxyCheckResultMsg = document.getElementById('proxy-check-result-msg');
+
+const chipUserBadge = document.getElementById('chip-user-badge');
+const valAuthUser = document.getElementById('val-auth-user');
+const btnLogout = document.getElementById('btn-logout');
+
+const loginOverlay = document.getElementById('login-overlay');
+const loginErrorBanner = document.getElementById('login-error-banner');
+const loginUsernameInput = document.getElementById('login-username');
+const loginPasswordInput = document.getElementById('login-password');
+const btnLoginSubmit = document.getElementById('btn-login-submit');
+
+const cfgAuthToggle = document.getElementById('cfg-auth-toggle');
+const lblAuthStatusText = document.getElementById('lbl-auth-status-text');
+const cfgAuthUsername = document.getElementById('cfg-auth-username');
+const cfgAuthPassword = document.getElementById('cfg-auth-password');
+const cfgDashboardPort = document.getElementById('cfg-dashboard-port');
+const btnSaveAuthCfg = document.getElementById('btn-save-auth-cfg');
 
 const cfgRelayPort = document.getElementById('cfg-relay-port');
 const cfgRelayUser = document.getElementById('cfg-relay-user');
@@ -112,6 +140,10 @@ if (proxiesTextarea) {
 async function fetchStatus() {
     try {
         const res = await fetch('/api/status');
+        if (res.status === 401) {
+            showLoginOverlay();
+            return;
+        }
         if (!res.ok) return;
         const data = await res.json();
         currentStatusData = data;
@@ -158,18 +190,54 @@ function renderDashboard(data) {
         cfgRelayPass.value = cfg.relay_client_pass;
     }
 
+    // Security & Auth values sync
+    if (cfgAuthUsername && document.activeElement !== cfgAuthUsername && cfg.dashboard_username) {
+        cfgAuthUsername.value = cfg.dashboard_username;
+    }
+    if (cfgDashboardPort && document.activeElement !== cfgDashboardPort && cfg.dashboard_port) {
+        cfgDashboardPort.value = cfg.dashboard_port;
+    }
+    if (cfgAuthToggle) {
+        const authOn = (cfg.dashboard_auth_enabled !== false);
+        cfgAuthToggle.checked = authOn;
+        if (lblAuthStatusText) {
+            lblAuthStatusText.textContent = authOn ? 'AKTIF' : 'NONAKTIF';
+            lblAuthStatusText.style.color = authOn ? '#00e676' : '#ff5252';
+        }
+    }
+
     const m = data.metrics || {};
     const total = m.total_nodes || 0;
     const hRunning = m.harvester_running || 0;
     const rRunning = m.relay_running || 0;
     const ssTotal = m.surfshark_total || 0;
     const pxTotal = m.proxy_total || 0;
+    const deadPx = m.proxy_dead || 0;
 
     if (statRelayPorts) statRelayPorts.textContent = rRunning;
     if (statRelayDetail) statRelayDetail.textContent = `${m.relay_active_conns || 0} Active Conns (${m.relay_traffic_in || '0 B'} in, ${m.relay_traffic_out || '0 B'} out)`;
 
     if (statHarvesterWorkers) statHarvesterWorkers.textContent = hRunning;
     if (statHarvesterDetail) statHarvesterDetail.textContent = `${total} Total Nodes (SS: ${ssTotal}, PX: ${pxTotal})`;
+
+    // Proxy check live progress tracking
+    const cs = data.check_state || {};
+    if (cs.is_checking) {
+        if (proxyCheckBanner) proxyCheckBanner.style.display = 'block';
+        if (proxyCheckProgressText) proxyCheckProgressText.textContent = `${cs.done} / ${cs.total}`;
+        const pct = Math.round((cs.done / Math.max(1, cs.total)) * 100);
+        if (proxyCheckProgressBar) proxyCheckProgressBar.style.width = `${pct}%`;
+        if (proxyCheckLiveCnt) proxyCheckLiveCnt.textContent = cs.alive;
+        if (proxyCheckDeadCnt) proxyCheckDeadCnt.textContent = cs.dead;
+        if (proxyCheckResultMsg) proxyCheckResultMsg.textContent = "Pengecekan berjalan...";
+    } else {
+        if (cs.last_result && proxyCheckResultMsg) {
+            proxyCheckResultMsg.textContent = cs.last_result;
+        }
+        if (proxyCheckBanner && (!cs.last_result || cs.done === 0)) {
+            proxyCheckBanner.style.display = 'none';
+        }
+    }
 
     const bw = m.bandwidth || {};
     if (statBandwidthTotal) {
@@ -195,6 +263,7 @@ function renderDashboard(data) {
     if (cntPillHarvester) cntPillHarvester.textContent = hRunning;
     if (cntPillError) cntPillError.textContent = deadCount;
     if (cntPurgeError) cntPurgeError.textContent = deadCount;
+    if (cntDeadProxy) cntDeadProxy.textContent = deadPx;
 
     renderTable(allNodesList);
 }
@@ -401,6 +470,36 @@ if (btnSaveRelayCfg) {
     });
 }
 
+// Save Surfshark Key Only
+if (btnSaveSsKey) {
+    btnSaveSsKey.addEventListener('click', async () => {
+        const privkey = (cfgSurfsharkKey.value || '').trim();
+        if (!privkey) {
+            showToast("WireGuard Private Key Surfshark tidak boleh kosong.", true);
+            return;
+        }
+        btnSaveSsKey.disabled = true;
+        try {
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ surfshark_private_key: privkey })
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast("WireGuard Private Key Surfshark berhasil disimpan!");
+                fetchStatus();
+            } else {
+                showToast("Gagal menyimpan key.", true);
+            }
+        } catch (e) {
+            showToast("Koneksi gagal saat menyimpan key.", true);
+        } finally {
+            btnSaveSsKey.disabled = false;
+        }
+    });
+}
+
 // Generate Surfshark
 if (btnGenerateSs) {
     btnGenerateSs.addEventListener('click', async () => {
@@ -491,15 +590,104 @@ if (btnSaveProxies) {
     });
 }
 
-// Test Proxies
+// Test Proxies (Check all without removing)
 if (btnCheckProxies) {
     btnCheckProxies.addEventListener('click', async () => {
         try {
-            const res = await fetch('/api/check', { method: 'POST' });
+            const res = await fetch('/api/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ remove_dead: false })
+            });
             const data = await res.json();
             showToast(data.message);
+            fetchStatus();
         } catch (e) {
             showToast("Gagal memulai test proxy.", true);
+        }
+    });
+}
+
+// Test Proxies & Auto Purge Dead
+if (btnCheckAndPurge) {
+    btnCheckAndPurge.addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ remove_dead: true })
+            });
+            const data = await res.json();
+            showToast(data.message);
+            fetchStatus();
+        } catch (e) {
+            showToast("Gagal memulai test & purge proxy.", true);
+        }
+    });
+}
+
+// Purge Dead Proxies directly
+if (btnPurgeDeadProxies) {
+    btnPurgeDeadProxies.addEventListener('click', async () => {
+        try {
+            const res = await fetch('/api/proxies/purge-dead', { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                showToast(data.message);
+                fetchStatus();
+            }
+        } catch (e) {
+            showToast("Gagal membersihkan proxy mati.", true);
+        }
+    });
+}
+
+// Save Security & Credentials
+if (btnSaveAuthCfg) {
+    btnSaveAuthCfg.addEventListener('click', async () => {
+        const authEnabled = cfgAuthToggle ? cfgAuthToggle.checked : true;
+        const username = (cfgAuthUsername ? cfgAuthUsername.value : '').trim();
+        const password = (cfgAuthPassword ? cfgAuthPassword.value : '').trim();
+        const port = parseInt(cfgDashboardPort ? cfgDashboardPort.value : '80') || 80;
+
+        btnSaveAuthCfg.disabled = true;
+        try {
+            const payload = {
+                dashboard_auth_enabled: authEnabled,
+                dashboard_username: username || 'admin',
+                dashboard_port: port
+            };
+            if (password) {
+                payload.dashboard_password = password;
+            }
+
+            const res = await fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast("Pengaturan Keamanan & Kredensial berhasil disimpan!");
+                if (cfgAuthPassword) cfgAuthPassword.value = '';
+                checkAuthStatus();
+            } else {
+                showToast("Gagal menyimpan pengaturan keamanan.", true);
+            }
+        } catch (e) {
+            showToast("Koneksi gagal saat menyimpan kredensial.", true);
+        } finally {
+            btnSaveAuthCfg.disabled = false;
+        }
+    });
+}
+
+if (cfgAuthToggle) {
+    cfgAuthToggle.addEventListener('change', () => {
+        if (lblAuthStatusText) {
+            const on = cfgAuthToggle.checked;
+            lblAuthStatusText.textContent = on ? 'AKTIF' : 'NONAKTIF';
+            lblAuthStatusText.style.color = on ? '#00e676' : '#ff5252';
         }
     });
 }
@@ -773,9 +961,107 @@ window.addEventListener('click', (e) => {
     }
 });
 
-// Initial Bootstrap
-document.addEventListener('DOMContentLoaded', () => {
+function showLoginOverlay() {
+    if (loginOverlay) loginOverlay.style.display = 'flex';
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
+function hideLoginOverlay() {
+    if (loginOverlay) loginOverlay.style.display = 'none';
+    if (loginErrorBanner) loginErrorBanner.style.display = 'none';
+    if (loginPasswordInput) loginPasswordInput.value = '';
+}
+
+async function checkAuthStatus() {
+    try {
+        const res = await fetch('/api/auth/status');
+        if (!res.ok) {
+            showLoginOverlay();
+            return;
+        }
+        const data = await res.json();
+        if (data.auth_enabled) {
+            if (data.logged_in) {
+                hideLoginOverlay();
+                if (chipUserBadge) chipUserBadge.style.display = 'flex';
+                if (valAuthUser) valAuthUser.textContent = data.username || 'admin';
+                if (btnLogout) btnLogout.style.display = 'inline-block';
+                startApp();
+            } else {
+                showLoginOverlay();
+                if (chipUserBadge) chipUserBadge.style.display = 'none';
+                if (btnLogout) btnLogout.style.display = 'none';
+            }
+        } else {
+            hideLoginOverlay();
+            if (chipUserBadge) chipUserBadge.style.display = 'none';
+            if (btnLogout) btnLogout.style.display = 'none';
+            startApp();
+        }
+    } catch (e) {
+        console.error("Auth check error:", e);
+    }
+}
+
+async function submitLogin() {
+    const user = (loginUsernameInput ? loginUsernameInput.value : '').trim();
+    const pass = (loginPasswordInput ? loginPasswordInput.value : '').trim();
+
+    if (!user || !pass) return;
+
+    if (btnLoginSubmit) btnLoginSubmit.disabled = true;
+    try {
+        const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: user, password: pass })
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            hideLoginOverlay();
+            showToast("Login berhasil! Selamat datang di TraffNode V3 Cockpit.");
+            checkAuthStatus();
+        } else {
+            if (loginErrorBanner) {
+                loginErrorBanner.textContent = data.detail || "Username atau password salah.";
+                loginErrorBanner.style.display = 'block';
+            }
+        }
+    } catch (e) {
+        if (loginErrorBanner) {
+            loginErrorBanner.textContent = "Koneksi ke server gagal.";
+            loginErrorBanner.style.display = 'block';
+        }
+    } finally {
+        if (btnLoginSubmit) btnLoginSubmit.disabled = false;
+    }
+}
+
+async function doLogout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (e) {}
+    showToast("Berhasil logout.");
+    showLoginOverlay();
+    if (chipUserBadge) chipUserBadge.style.display = 'none';
+    if (btnLogout) btnLogout.style.display = 'none';
+}
+
+function startApp() {
     fetchStatus();
     fetchRawProxies();
-    pollTimer = setInterval(fetchStatus, 4000);
+    if (!pollTimer) {
+        pollTimer = setInterval(fetchStatus, 3000);
+    }
+}
+
+window.submitLogin = submitLogin;
+window.doLogout = doLogout;
+
+// Initial Bootstrap
+document.addEventListener('DOMContentLoaded', () => {
+    checkAuthStatus();
 });

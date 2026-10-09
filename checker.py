@@ -1,8 +1,10 @@
 import re
 import time
+import socket
+import struct
 import asyncio
 import httpx
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple, Callable
 
 _IP_REGEX = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 _GEOIP_CACHE: Dict[str, str] = {}
@@ -253,7 +255,45 @@ async def fetch_geoip_country(ip: str) -> str:
     return "Unknown"
 
 
-async def check_single_proxy(proxy: ProxyNode, timeout: float = 5.0) -> ProxyNode:
+async def check_socks4_handshake(proxy_host: str, proxy_port: int, timeout: float = 4.0) -> Tuple[bool, Optional[str], Optional[float], Optional[str]]:
+    t0 = time.time()
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(proxy_host, proxy_port), timeout=timeout
+        )
+        # SOCKS4 connect to icanhazip.com (104.18.27.120:80)
+        target_ip = socket.inet_aton("104.18.27.120")
+        req = b"\x04\x01" + struct.pack(">H", 80) + target_ip + b"\x00"
+        writer.write(req)
+        await writer.drain()
+        resp = await asyncio.wait_for(reader.read(8), timeout=timeout)
+        if len(resp) >= 2 and resp[0] == 0x00 and resp[1] == 0x5a:
+            writer.write(b"GET / HTTP/1.1\r\nHost: icanhazip.com\r\nUser-Agent: curl/8.0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            raw_body = await asyncio.wait_for(reader.read(1024), timeout=timeout)
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            elapsed = (time.time() - t0) * 1000.0
+            text = raw_body.decode("utf-8", errors="ignore")
+            m = re.search(r'\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b', text)
+            exit_ip = m.group(0) if m else proxy_host
+            return True, exit_ip, round(elapsed, 1), None
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return False, None, None, "SOCKS4 handshake rejected"
+    except (asyncio.TimeoutError, TimeoutError):
+        return False, None, None, f"Timeout ({timeout}s)"
+    except Exception as e:
+        return False, None, None, str(e)[:30]
+
+
+async def check_single_proxy(proxy: ProxyNode, timeout: float = 4.0) -> ProxyNode:
     if not proxy.is_valid:
         proxy.is_alive = False
         proxy.error = "Format proxy tidak valid"
@@ -262,11 +302,29 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 5.0) -> ProxyNod
     if proxy.proto_specified:
         protocols_to_try = [proxy.protocol.lower()]
     else:
-        protocols_to_try = ["http", "socks5"]
+        protocols_to_try = ["http", "socks5", "socks4"]
 
     last_err = "Gagal terkoneksi"
 
     for proto in protocols_to_try:
+        # SOCKS4 socket check
+        if proto == "socks4":
+            ok, exit_ip, elapsed, err_msg = await check_socks4_handshake(proxy.host, proxy.port, timeout=timeout)
+            proxy.last_checked = time.time()
+            if ok:
+                proxy.is_alive = True
+                proxy.protocol = "socks4"
+                proxy.latency_ms = elapsed
+                proxy.exit_ip = exit_ip or proxy.host
+                proxy.error = None
+                proxy.country = await fetch_geoip_country(proxy.exit_ip)
+                proxy.update_device_name()
+                return proxy
+            else:
+                last_err = err_msg or "SOCKS4 gagal"
+                continue
+
+        # HTTP / SOCKS5 via httpx
         proxy_url = proxy.to_url(proto=proto)
         for target_url in CHECK_TARGETS:
             t0 = time.time()
@@ -291,10 +349,13 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 5.0) -> ProxyNod
                             last_err = "Respon bukan IP valid"
                     else:
                         last_err = f"HTTP {resp.status_code}"
-            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.ProxyError) as ce:
+            except (httpx.ConnectTimeout, httpx.TimeoutException) as te:
                 proxy.last_checked = time.time()
-                is_timeout = isinstance(ce, (httpx.ConnectTimeout, httpx.TimeoutException))
-                last_err = f"Timeout ({timeout}s)" if is_timeout else "Proxy Connection Refused"
+                last_err = f"Timeout ({timeout}s)"
+                break
+            except (httpx.ConnectError, httpx.ProxyError) as ce:
+                proxy.last_checked = time.time()
+                last_err = "Connection Refused / Closed"
                 break
             except Exception as e:
                 proxy.last_checked = time.time()
@@ -311,12 +372,35 @@ async def check_single_proxy(proxy: ProxyNode, timeout: float = 5.0) -> ProxyNod
     return proxy
 
 
-async def check_all_proxies(proxies: List[ProxyNode], max_concurrency: int = 20, timeout: float = 5.0) -> List[ProxyNode]:
+async def check_all_proxies(
+    proxies: List[ProxyNode],
+    max_concurrency: int = 30,
+    timeout: float = 4.0,
+    progress_callback: Optional[Callable[[int, int, int, int], None]] = None
+) -> List[ProxyNode]:
     sem = asyncio.Semaphore(max_concurrency)
+    total = len(proxies)
+    done_count = 0
+    alive_count = 0
+    dead_count = 0
+    lock = asyncio.Lock()
 
-    async def _worker(p):
+    async def _worker(p: ProxyNode):
+        nonlocal done_count, alive_count, dead_count
         async with sem:
-            return await check_single_proxy(p, timeout=timeout)
+            res = await check_single_proxy(p, timeout=timeout)
+            async with lock:
+                done_count += 1
+                if res.is_alive:
+                    alive_count += 1
+                else:
+                    dead_count += 1
+                if progress_callback:
+                    try:
+                        progress_callback(done_count, total, alive_count, dead_count)
+                    except Exception:
+                        pass
+            return res
 
     tasks = [_worker(p) for p in proxies]
     return await asyncio.gather(*tasks)
