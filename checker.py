@@ -377,7 +377,8 @@ async def check_all_proxies(
     proxies: List[ProxyNode],
     max_concurrency: int = 30,
     timeout: float = 4.0,
-    progress_callback: Optional[Callable[[int, int, int, int], None]] = None
+    progress_callback: Optional[Callable[..., None]] = None,
+    cancel_event: Optional[asyncio.Event] = None
 ) -> List[ProxyNode]:
     sem = asyncio.Semaphore(max_concurrency)
     total = len(proxies)
@@ -388,8 +389,22 @@ async def check_all_proxies(
 
     async def _worker(p: ProxyNode):
         nonlocal done_count, alive_count, dead_count
+        if cancel_event and cancel_event.is_set():
+            return p
+
         async with sem:
+            if cancel_event and cancel_event.is_set():
+                return p
+
+            target_display = f"{p.host}:{p.port}" if (p.host and p.port) else p.raw[:25]
+            if progress_callback:
+                try:
+                    progress_callback(done_count, total, alive_count, dead_count, target_display)
+                except Exception:
+                    pass
+
             res = await check_single_proxy(p, timeout=timeout)
+
             async with lock:
                 done_count += 1
                 if res.is_alive:
@@ -398,7 +413,7 @@ async def check_all_proxies(
                     dead_count += 1
                 if progress_callback:
                     try:
-                        progress_callback(done_count, total, alive_count, dead_count)
+                        progress_callback(done_count, total, alive_count, dead_count, target_display)
                     except Exception:
                         pass
             return res

@@ -30,15 +30,19 @@ const lblProxyCountHint = document.getElementById('lbl-proxy-count-hint');
 const btnSaveProxies = document.getElementById('btn-save-proxies');
 const btnCheckProxies = document.getElementById('btn-check-proxies');
 const btnCheckAndPurge = document.getElementById('btn-check-and-purge');
+const btnStopCheck = document.getElementById('btn-stop-check');
 const btnPurgeDeadProxies = document.getElementById('btn-purge-dead-proxies');
 const cntDeadProxy = document.getElementById('cnt-dead-proxy');
 const btnClearProxies = document.getElementById('btn-clear-proxies');
 
 const proxyCheckBanner = document.getElementById('proxy-check-banner');
+const proxyCheckTitle = document.getElementById('proxy-check-title');
 const proxyCheckProgressText = document.getElementById('proxy-check-progress-text');
 const proxyCheckProgressBar = document.getElementById('proxy-check-progress-bar');
 const proxyCheckLiveCnt = document.getElementById('proxy-check-live-cnt');
 const proxyCheckDeadCnt = document.getElementById('proxy-check-dead-cnt');
+const proxyCheckCurrentIp = document.getElementById('proxy-check-current-ip');
+const proxyCheckCurrentWrap = document.getElementById('proxy-check-current-wrap');
 const proxyCheckResultMsg = document.getElementById('proxy-check-result-msg');
 
 const chipUserBadge = document.getElementById('chip-user-badge');
@@ -135,6 +139,9 @@ function updateProxyLineCount() {
 
 if (proxiesTextarea) {
     proxiesTextarea.addEventListener('input', updateProxyLineCount);
+    proxiesTextarea.addEventListener('change', updateProxyLineCount);
+    proxiesTextarea.addEventListener('keyup', updateProxyLineCount);
+    proxiesTextarea.addEventListener('paste', () => setTimeout(updateProxyLineCount, 50));
 }
 
 async function fetchStatus() {
@@ -153,16 +160,18 @@ async function fetchStatus() {
     }
 }
 
-async function fetchRawProxies() {
+async function fetchRawProxies(forceReload = false) {
     try {
         const res = await fetch('/api/proxies/raw');
-        if (res.ok && proxiesTextarea && proxiesTextarea.value === "") {
+        if (res.ok && proxiesTextarea && (forceReload || proxiesTextarea.value === "")) {
             const txt = await res.text();
             proxiesTextarea.value = txt;
             updateProxyLineCount();
         }
     } catch (e) {}
 }
+
+let isCurrentlyFastPolling = false;
 
 function renderDashboard(data) {
     if (valServerIp) valServerIp.textContent = data.server_ip || '127.0.0.1';
@@ -223,18 +232,78 @@ function renderDashboard(data) {
     // Proxy check live progress tracking
     const cs = data.check_state || {};
     if (cs.is_checking) {
-        if (proxyCheckBanner) proxyCheckBanner.style.display = 'block';
-        if (proxyCheckProgressText) proxyCheckProgressText.textContent = `${cs.done} / ${cs.total}`;
-        const pct = Math.round((cs.done / Math.max(1, cs.total)) * 100);
-        if (proxyCheckProgressBar) proxyCheckProgressBar.style.width = `${pct}%`;
-        if (proxyCheckLiveCnt) proxyCheckLiveCnt.textContent = cs.alive;
-        if (proxyCheckDeadCnt) proxyCheckDeadCnt.textContent = cs.dead;
-        if (proxyCheckResultMsg) proxyCheckResultMsg.textContent = "Pengecekan berjalan...";
-    } else {
-        if (cs.last_result && proxyCheckResultMsg) {
-            proxyCheckResultMsg.textContent = cs.last_result;
+        if (!isCurrentlyFastPolling) {
+            isCurrentlyFastPolling = true;
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(fetchStatus, 750);
         }
-        if (proxyCheckBanner && (!cs.last_result || cs.done === 0)) {
+
+        if (proxyCheckBanner) proxyCheckBanner.style.display = 'block';
+        const pct = Math.round((cs.done / Math.max(1, cs.total)) * 100);
+        if (proxyCheckTitle) {
+            proxyCheckTitle.textContent = `🩺 Sedang Memeriksa Proxy ${cs.done} dari ${cs.total} (${pct}%)...`;
+        }
+        if (proxyCheckProgressText) proxyCheckProgressText.textContent = `${cs.done} / ${cs.total}`;
+        if (proxyCheckProgressBar) proxyCheckProgressBar.style.width = `${pct}%`;
+        if (proxyCheckLiveCnt) proxyCheckLiveCnt.textContent = cs.alive || 0;
+        if (proxyCheckDeadCnt) proxyCheckDeadCnt.textContent = cs.dead || 0;
+        if (proxyCheckCurrentIp) proxyCheckCurrentIp.textContent = cs.current_target || '--';
+        if (proxyCheckResultMsg) {
+            proxyCheckResultMsg.textContent = cs.remove_dead ? "Mode: Auto Hapus Dead" : "Mode: Verifikasi Saja";
+        }
+
+        // Lock buttons during checking
+        if (btnCheckProxies) {
+            btnCheckProxies.disabled = true;
+            btnCheckProxies.innerHTML = `⏳ Checking (${cs.done}/${cs.total})...`;
+        }
+        if (btnCheckAndPurge) {
+            btnCheckAndPurge.disabled = true;
+            btnCheckAndPurge.innerHTML = `⏳ Checking (${cs.done}/${cs.total})...`;
+        }
+        if (btnSaveProxies) btnSaveProxies.disabled = true;
+        if (btnPurgeDeadProxies) btnPurgeDeadProxies.disabled = true;
+        if (btnClearProxies) btnClearProxies.disabled = true;
+        if (proxiesTextarea) proxiesTextarea.readOnly = true;
+        if (btnStopCheck) {
+            btnStopCheck.style.display = 'inline-flex';
+            btnStopCheck.disabled = false;
+        }
+    } else {
+        if (isCurrentlyFastPolling) {
+            isCurrentlyFastPolling = false;
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(fetchStatus, 3000);
+            fetchRawProxies(true);
+        }
+
+        // Unlock buttons when idle
+        if (btnCheckProxies) {
+            btnCheckProxies.disabled = false;
+            btnCheckProxies.innerHTML = "⚡ TEST PROXY";
+        }
+        if (btnCheckAndPurge) {
+            btnCheckAndPurge.disabled = false;
+            btnCheckAndPurge.innerHTML = "🧪 TEST & HAPUS DEAD";
+        }
+        if (btnSaveProxies) btnSaveProxies.disabled = false;
+        if (btnPurgeDeadProxies) btnPurgeDeadProxies.disabled = false;
+        if (btnClearProxies) btnClearProxies.disabled = false;
+        if (proxiesTextarea) proxiesTextarea.readOnly = false;
+        if (btnStopCheck) {
+            btnStopCheck.style.display = 'none';
+        }
+
+        if (cs.last_result) {
+            if (proxyCheckBanner) proxyCheckBanner.style.display = 'block';
+            if (proxyCheckTitle) proxyCheckTitle.textContent = "✅ Pengecekan Selesai";
+            if (proxyCheckProgressText) proxyCheckProgressText.textContent = `${cs.done} / ${cs.total}`;
+            if (proxyCheckProgressBar) proxyCheckProgressBar.style.width = '100%';
+            if (proxyCheckLiveCnt) proxyCheckLiveCnt.textContent = cs.alive || 0;
+            if (proxyCheckDeadCnt) proxyCheckDeadCnt.textContent = cs.dead || 0;
+            if (proxyCheckCurrentIp) proxyCheckCurrentIp.textContent = '--';
+            if (proxyCheckResultMsg) proxyCheckResultMsg.textContent = cs.last_result;
+        } else if (proxyCheckBanner && (!cs.done || cs.done === 0)) {
             proxyCheckBanner.style.display = 'none';
         }
     }
@@ -603,17 +672,35 @@ if (btnSaveProxies) {
 // Test Proxies (Check all without removing)
 if (btnCheckProxies) {
     btnCheckProxies.addEventListener('click', async () => {
+        const rawText = (proxiesTextarea ? proxiesTextarea.value : '').trim();
+        btnCheckProxies.disabled = true;
+        btnCheckAndPurge.disabled = true;
+        btnCheckProxies.innerHTML = "⏳ Starting...";
         try {
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: false })
+                body: JSON.stringify({ remove_dead: false, raw_text: rawText || undefined })
             });
             const data = await res.json();
-            showToast(data.message);
+            if (data.success) {
+                showToast(data.message);
+                if (btnStopCheck) {
+                    btnStopCheck.style.display = 'inline-flex';
+                    btnStopCheck.disabled = false;
+                }
+            } else {
+                showToast(data.message || "Gagal memulai test proxy.", true);
+                btnCheckProxies.disabled = false;
+                btnCheckAndPurge.disabled = false;
+                btnCheckProxies.innerHTML = "⚡ TEST PROXY";
+            }
             fetchStatus();
         } catch (e) {
             showToast("Gagal memulai test proxy.", true);
+            btnCheckProxies.disabled = false;
+            btnCheckAndPurge.disabled = false;
+            btnCheckProxies.innerHTML = "⚡ TEST PROXY";
         }
     });
 }
@@ -621,17 +708,54 @@ if (btnCheckProxies) {
 // Test Proxies & Auto Purge Dead
 if (btnCheckAndPurge) {
     btnCheckAndPurge.addEventListener('click', async () => {
+        const rawText = (proxiesTextarea ? proxiesTextarea.value : '').trim();
+        btnCheckProxies.disabled = true;
+        btnCheckAndPurge.disabled = true;
+        btnCheckAndPurge.innerHTML = "⏳ Starting...";
         try {
             const res = await fetch('/api/check', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ remove_dead: true })
+                body: JSON.stringify({ remove_dead: true, raw_text: rawText || undefined })
             });
             const data = await res.json();
-            showToast(data.message);
+            if (data.success) {
+                showToast(data.message);
+                if (btnStopCheck) {
+                    btnStopCheck.style.display = 'inline-flex';
+                    btnStopCheck.disabled = false;
+                }
+            } else {
+                showToast(data.message || "Gagal memulai test & purge proxy.", true);
+                btnCheckProxies.disabled = false;
+                btnCheckAndPurge.disabled = false;
+                btnCheckAndPurge.innerHTML = "🧪 TEST & HAPUS DEAD";
+            }
             fetchStatus();
         } catch (e) {
             showToast("Gagal memulai test & purge proxy.", true);
+            btnCheckProxies.disabled = false;
+            btnCheckAndPurge.disabled = false;
+            btnCheckAndPurge.innerHTML = "🧪 TEST & HAPUS DEAD";
+        }
+    });
+}
+
+// Stop Proxy Check
+if (btnStopCheck) {
+    btnStopCheck.addEventListener('click', async () => {
+        btnStopCheck.disabled = true;
+        btnStopCheck.innerHTML = "⏳ Menghentikan...";
+        try {
+            const res = await fetch('/api/check/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await res.json();
+            showToast(data.message || "Perintah STOP dikirim.");
+            fetchStatus();
+        } catch (e) {
+            showToast("Gagal menghentikan test proxy.", true);
         }
     });
 }

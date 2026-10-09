@@ -75,6 +75,7 @@ class AuthUpdateRequest(BaseModel):
 
 class CheckRequest(BaseModel):
     remove_dead: Optional[bool] = False
+    raw_text: Optional[str] = None
 
 class ProxiesUpdateRequest(BaseModel):
     raw_text: str
@@ -247,58 +248,109 @@ def is_authenticated(request: Request) -> bool:
 
     return False
 
+_check_cancel_event: Optional[asyncio.Event] = None
+
 check_state = {
     "is_checking": False,
+    "cancel_requested": False,
+    "remove_dead": False,
     "total": 0,
     "done": 0,
     "alive": 0,
     "dead": 0,
+    "current_target": "",
     "last_result": None
 }
 
-async def run_health_check_task(remove_dead: bool = False):
-    global custom_proxy_nodes
-    if check_state["is_checking"] or not custom_proxy_nodes:
+async def run_health_check_task(remove_dead: bool = False, raw_text: Optional[str] = None):
+    global custom_proxy_nodes, _check_cancel_event
+    if check_state["is_checking"]:
         return
+
+    # If raw_text is provided, parse and save proxies first
+    if raw_text is not None and raw_text.strip():
+        parsed = parse_proxies_text(raw_text)
+        if parsed:
+            save_proxies_file(raw_text)
+            for idx, p in enumerate(parsed):
+                p.id = 1001 + idx
+                p.node_type = "proxy"
+                p.relay_status = "STOPPED"
+            custom_proxy_nodes = parsed
+            save_nodes_file(get_combined_nodes())
+
+    if not custom_proxy_nodes:
+        raw_px = load_proxies_file()
+        if raw_px:
+            parsed = parse_proxies_text(raw_px)
+            for idx, p in enumerate(parsed):
+                p.id = 1001 + idx
+                p.node_type = "proxy"
+                p.relay_status = "STOPPED"
+            custom_proxy_nodes = parsed
+            save_nodes_file(get_combined_nodes())
+
+    if not custom_proxy_nodes:
+        check_state["is_checking"] = False
+        check_state["last_result"] = "Tidak ada proxy untuk dicek (daftar proxy kosong)."
+        return
+
+    _check_cancel_event = asyncio.Event()
     check_state["is_checking"] = True
+    check_state["cancel_requested"] = False
+    check_state["remove_dead"] = remove_dead
     check_state["total"] = len(custom_proxy_nodes)
     check_state["done"] = 0
     check_state["alive"] = 0
     check_state["dead"] = 0
+    check_state["current_target"] = ""
+    check_state["last_result"] = None
 
-    def _on_prog(done, total, alive, dead):
+    def _on_prog(done, total, alive, dead, current_target=""):
         check_state["done"] = done
         check_state["total"] = total
         check_state["alive"] = alive
         check_state["dead"] = dead
+        check_state["current_target"] = current_target
 
     try:
         checked_proxies = await check_all_proxies(
             custom_proxy_nodes,
             max_concurrency=30,
             timeout=config.get("check_timeout", 4.0),
-            progress_callback=_on_prog
+            progress_callback=_on_prog,
+            cancel_event=_check_cancel_event
         )
         checked_map = {n.id: n for n in checked_proxies}
         for i, n in enumerate(custom_proxy_nodes):
             if n.id in checked_map:
                 custom_proxy_nodes[i] = checked_map[n.id]
 
+        was_cancelled = check_state["cancel_requested"] or (_check_cancel_event and _check_cancel_event.is_set())
+
         if remove_dead:
             initial_count = len(custom_proxy_nodes)
-            custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is True]
+            custom_proxy_nodes = [n for n in custom_proxy_nodes if n.is_alive is not False]
             removed = initial_count - len(custom_proxy_nodes)
             for idx, p in enumerate(custom_proxy_nodes):
                 p.id = 1001 + idx
             lines = [p.to_url() for p in custom_proxy_nodes]
             save_proxies_file("\n".join(lines))
-            check_state["last_result"] = f"Pengecekan selesai: {len(custom_proxy_nodes)} Live aktif, {removed} Dead dihapus."
+            if was_cancelled:
+                check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} dicek ({check_state['alive']} Live, {removed} Dead dihapus)."
+            else:
+                check_state["last_result"] = f"Pengecekan selesai: {len(custom_proxy_nodes)} Live aktif, {removed} Dead dihapus."
         else:
-            check_state["last_result"] = f"Pengecekan selesai: {check_state['alive']} Live, {check_state['dead']} Dead."
+            if was_cancelled:
+                check_state["last_result"] = f"Pengecekan dihentikan: {check_state['done']} dari {check_state['total']} dicek ({check_state['alive']} Live, {check_state['dead']} Dead)."
+            else:
+                check_state["last_result"] = f"Pengecekan selesai: {check_state['alive']} Live, {check_state['dead']} Dead (Total: {check_state['total']})."
 
         save_nodes_file(get_combined_nodes())
     finally:
         check_state["is_checking"] = False
+        check_state["cancel_requested"] = False
+        _check_cancel_event = None
 
 async def auto_supervisor_loop():
     while True:
@@ -653,10 +705,30 @@ async def update_proxies(payload: ProxiesUpdateRequest, bg_tasks: BackgroundTask
 async def trigger_check(bg_tasks: BackgroundTasks, payload: Optional[CheckRequest] = None):
     if check_state["is_checking"]:
         return {"success": False, "message": "Pengecekan proxy sedang berlangsung."}
+
+    raw_text = payload.raw_text if payload else None
     remove_dead = bool(payload and payload.remove_dead)
-    bg_tasks.add_task(run_health_check_task, remove_dead=remove_dead)
+
+    has_text = bool(raw_text and raw_text.strip())
+    if not has_text and not custom_proxy_nodes:
+        txt = load_proxies_file()
+        if not txt.strip():
+            return {"success": False, "message": "Daftar proxy kosong. Silakan masukkan proxy di textarea terlebih dahulu."}
+
+    bg_tasks.add_task(run_health_check_task, remove_dead=remove_dead, raw_text=raw_text)
     msg = "Pengecekan proxy dimulai (otomatis hapus proxy mati)." if remove_dead else "Pengecekan kesehatan proxy dimulai."
     return {"success": True, "message": msg}
+
+
+@app.post("/api/check/stop")
+async def stop_check_endpoint():
+    global _check_cancel_event
+    if not check_state["is_checking"]:
+        return {"success": False, "message": "Tidak ada pengecekan proxy yang sedang aktif."}
+    check_state["cancel_requested"] = True
+    if _check_cancel_event:
+        _check_cancel_event.set()
+    return {"success": True, "message": "Perintah STOP diterima. Pengecekan proxy sedang dihentikan..."}
 
 
 @app.post("/api/proxies/purge-dead")

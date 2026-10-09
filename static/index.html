@@ -188,16 +188,19 @@
                         </div>
 
                         <div style="display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-                            <span class="tn-subtitle" id="lbl-proxy-count-hint">0 baris proxy</span>
-                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                            <span class="tn-subtitle" id="lbl-proxy-count-hint" style="font-weight: 700; color: #38bdf8;">0 baris proxy terdeteksi</span>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
                                 <button type="button" class="tn-btn tn-btn-primary" id="btn-save-proxies">
                                     💾 SIMPAN PROXY
                                 </button>
                                 <button type="button" class="tn-btn tn-btn-action" id="btn-check-proxies" title="Test kesehatan semua proxy tanpa menghapus">
-                                    🩺 TEST PROXY
+                                    ⚡ TEST PROXY
                                 </button>
                                 <button type="button" class="tn-btn tn-btn-success" id="btn-check-and-purge" title="Test semua proxy dan otomatis hapus yang mati (hanya simpan yang LIVE)">
-                                    ⚡ TEST & HAPUS DEAD
+                                    🧪 TEST & HAPUS DEAD
+                                </button>
+                                <button type="button" class="tn-btn tn-btn-danger" id="btn-stop-check" style="display: none; background: #dc2626; border-color: #ef4444; font-weight: 700;" title="Hentikan pengecekan proxy yang sedang berjalan">
+                                    ⏹ STOP CHECK
                                 </button>
                                 <button type="button" class="tn-btn tn-btn-action" id="btn-purge-dead-proxies" style="border-color: #ff5252; color: #ff5252;" title="Hapus seluruh proxy yang mati atau error saat ini">
                                     🧹 Hapus Dead (<span id="cnt-dead-proxy">0</span>)
@@ -210,16 +213,17 @@
 
                         <!-- Live Progress Banner for Proxy Checking -->
                         <div id="proxy-check-banner" style="display: none; margin-top: 12px; padding: 12px 14px; background: rgba(0, 229, 255, 0.08); border: 1px solid #00e5ff; border-radius: 6px;">
-                            <div style="display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 12px; font-weight: 700;">
-                                <span style="color: #00e5ff;">🩺 Sedang Memeriksa Kesehatan Proxy...</span>
-                                <span id="proxy-check-progress-text" style="color: #ffffff;">0 / 0</span>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 12px; font-weight: 700;">
+                                <span style="color: #00e5ff;" id="proxy-check-title">🩺 Sedang Memeriksa Kesehatan Proxy...</span>
+                                <span id="proxy-check-progress-text" style="color: #ffffff; font-family: var(--font-mono);">0 / 0</span>
                             </div>
-                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 7px; overflow: hidden;">
-                                <div id="proxy-check-progress-bar" style="background: #00e5ff; width: 0%; height: 100%; transition: width 0.2s;"></div>
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 8px; overflow: hidden; margin-bottom: 8px;">
+                                <div id="proxy-check-progress-bar" style="background: linear-gradient(90deg, #00e5ff, #00e676); width: 0%; height: 100%; transition: width 0.25s ease;"></div>
                             </div>
-                            <div style="display: flex; gap: 16px; margin-top: 8px; font-size: 11px;">
-                                <span style="color: #00e676;">🟢 Live Aktif: <strong id="proxy-check-live-cnt">0</strong></span>
-                                <span style="color: #ff5252;">🔴 Dead: <strong id="proxy-check-dead-cnt">0</strong></span>
+                            <div style="display: flex; gap: 14px; align-items: center; font-size: 11px; flex-wrap: wrap;">
+                                <span style="color: #00e676; font-weight: 700;">🟢 Live Aktif: <strong id="proxy-check-live-cnt">0</strong></span>
+                                <span style="color: #ff5252; font-weight: 700;">🔴 Dead: <strong id="proxy-check-dead-cnt">0</strong></span>
+                                <span style="color: #38bdf8;" id="proxy-check-current-wrap">🔍 Target: <strong id="proxy-check-current-ip" style="font-family: var(--font-mono);">--</strong></span>
                                 <span id="proxy-check-result-msg" style="color: #94a3b8; margin-left: auto;"></span>
                             </div>
                         </div>
