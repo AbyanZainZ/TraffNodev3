@@ -20,6 +20,12 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 INSTALL_DIR="/opt/traffnode"
+echo -e "${YELLOW}Menghentikan service lama jika sedang berjalan...${NC}"
+systemctl stop traffnode 2>/dev/null || true
+pkill -9 -f "app.py" 2>/dev/null || true
+pkill -9 -f "cli start accept" 2>/dev/null || true
+pkill -9 -f "wireproxy" 2>/dev/null || true
+
 echo -e "${GREEN}[1/6] Memperbarui sistem & menginstall dependensi...${NC}"
 apt-get update -y
 apt-get install -y python3 python3-pip python3-venv git curl proxychains4 net-tools procps ufw
@@ -100,7 +106,12 @@ if [ -z "$TOTAL_SWAP" ] || [ "$TOTAL_SWAP" -lt 1000 ]; then
     fi
 fi
 
+if [ -f "$INSTALL_DIR/config.json" ]; then
+    sed -i 's/"dashboard_port": [0-9]*/"dashboard_port": 8888/' "$INSTALL_DIR/config.json"
+fi
+
 ufw allow 22/tcp comment "SSH" || true
+ufw allow 80/tcp comment "HTTP" || true
 ufw allow 8888/tcp comment "TraffNode V3 Dashboard" || true
 ufw allow 10001:11000/tcp comment "TraffNode V3 Inbound Relay Ports" || true
 ufw status | grep -q "Status: active" && ufw reload || true
